@@ -110,7 +110,7 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         if cancelled.is_set():
           break
         try:
-          self.wfile.write('PING'.encode('utf-8'))
+          self.wfile.write('PING\n'.encode('utf-8'))
         except Exception as e:
           traceback.print_exception(e)
           cancelled.set()
