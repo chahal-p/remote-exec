@@ -26,7 +26,8 @@ def read_from_pipe(pipe, queue: Queue, type: str, done: threading.Event, cancell
       if cancelled.is_set():
         break
       hex_output = line.hex()
-      queue.put(f"{type}:{hex_output}\n".encode('utf-8'))
+      item = f"{type}:{hex_output}\n".encode('utf-8')
+      queue.put(item)
   done.set()
 
 
@@ -38,7 +39,7 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
   t2 = threading.Thread(target=read_from_pipe, args=[stderr, queue, 'STDERR', done_stderr, cancelled])
   t1.start()
   t2.start()
-  while not done_stdout.is_set() or not done_stderr.is_set():
+  while not queue.empty() or not done_stdout.is_set() or not done_stderr.is_set():
     try:
       yield queue.get(timeout=0.1)
     except EmptyQueueError:
