@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
+import argparse
 import http.server
+import os
+import re
 import socketserver
 import subprocess
 import traceback
@@ -8,7 +11,28 @@ import threading
 import time
 from queue import Queue, Empty as EmptyQueueError
 
+FLAGS=None
+
 PORT = 5567
+
+class CommandNotAllowed(Exception): pass
+
+def hexstr(data: str|bytes|int):
+  if isinstance(data, bytes):
+    return bytes.hex(data)
+  return bytes.hex(str(data).encode())
+
+def output_line(type: str, line: str|bytes|int) -> bytes:
+  return '{}:{}\n'.format(type, hexstr(line)).encode('utf-8')
+
+def stdout_line(line: str|bytes) -> bytes:
+  return output_line('STDOUT', line)
+
+def stderr_line(line: str|bytes) -> bytes:
+  return output_line('STDERR', line)
+
+def returncode_line(code: int) -> bytes:
+  return output_line('CODE', code)
 
 def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
   def checker():
@@ -25,9 +49,7 @@ def read_from_pipe(pipe, queue: Queue, type: str, done: threading.Event, cancell
     for line in iter(pipe.readline, b''):
       if cancelled.is_set():
         break
-      hex_output = line.hex()
-      item = f"{type}:{hex_output}\n".encode('utf-8')
-      queue.put(item)
+      queue.put(output_line(type, line))
   done.set()
 
 
@@ -47,9 +69,10 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
 
 
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
-  def run(self, cmd: list, cancelled: threading.Event):
+  def run(self, cmd: list, cwd:str, cancelled: threading.Event):
     try:
-      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      self.validate_cmd(cmd[0])
+      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
       on_cancellation(cancelled, process.kill)
       for l in output_reader(process.stdout, process.stderr, cancelled):
         yield l, None
@@ -63,8 +86,7 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
-      err_msg = str(e).encode('utf-8').hex()
-      yield f"STDERR:{err_msg}\n".encode('utf-8'), 1
+      yield stderr_line(str(e)), 1
 
   def do_POST(self):
     self.connection
@@ -77,13 +99,22 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       traceback.print_exception(e)
       self.send_response(500)
       self.end_headers()
-      self.wfile.write(f"CODE:0x01\n".encode('utf-8'))
+      self.wfile.write(stderr_line('Internal Server Error'))
+      self.wfile.write(returncode_line(1))
+
+  def validate_cmd(self, cmd):
+    if not FLAGS.allowed_commands:
+      raise CommandNotAllowed(f'Command not Allowed: {cmd}')
+    for rep in FLAGS.allowed_commands:
+      reg = re.compile(rep)
+      if not reg.match(cmd):
+        raise CommandNotAllowed(f'Command not Allowed: {cmd}')
 
   def exec(self, cancelled: threading.Event):
     try:
+      if 'Content-Length' not in self.headers:
+        raise ValueError("Content-Length header not provided")
       content_length = int(self.headers['Content-Length'])
-      if not content_length:
-        raise ValueError("")
       post_data_hex = self.rfile.read(content_length).decode('utf-8')
       cmd = []
       for arg in post_data_hex.split(':'):
@@ -92,19 +123,21 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       self.send_header('Content-Type', 'application/octet-stream')
       self.end_headers()
       self.cancel_on_connection_closed(cancelled)
-      for line, code in self.run(cmd, cancelled):
+      cwd = FLAGS.exec_cwd
+      cwd = self.headers.get('CWD', cwd)
+      for line, code in self.run(cmd, cwd, cancelled):
         if line is not None:
           self.wfile.write(line)
         if code is not None:
-          hex_code = str(code).encode('utf-8').hex()
-          self.wfile.write(f"CODE:{hex_code}\n".encode('utf-8'))
+          self.wfile.write(returncode_line(code))
     except ValueError as e:
       cancelled.set()
       traceback.print_exception(e)
       self.send_response(400)
       self.end_headers()
-      self.wfile.write(f"CODE:0x02\n".encode('utf-8'))
-  
+      self.wfile.write(stderr_line(str(e)))
+      self.wfile.write(returncode_line(2))
+
   def cancel_on_connection_closed(self, cancelled: threading.Event):
     def checker():
       while True:
@@ -123,6 +156,10 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
   pass
 
 if __name__ == "__main__":
+  parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
+  parser.add_argument('-a', '--allowed-commands', action='append', metavar='', type=str, help="Regex pattern for allowed commands", default=[])
+  parser.add_argument('-c', '--exec-cwd', metavar='', type=str, help="Default directory context", default=None)
+  FLAGS = parser.parse_args()
   with ThreadedHTTPServer(("", PORT), HTTPRequestHandler) as server:
     print(f"Serving at port {PORT}")
     print("Server is running... Press Ctrl+C to stop.")
