@@ -59,6 +59,8 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     if not FLAGS.allowed_commands:
       raise NotAllowedError(f'Command not Allowed: {cmd}')
     for rep in FLAGS.allowed_commands:
+      if rep == '':
+        continue
       reg = re.compile(rep)
       if reg.match(cmd):
         return
