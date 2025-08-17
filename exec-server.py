@@ -36,7 +36,6 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     yield None, process.returncode
 
   def do_POST(self):
-    self.connection
     cancelled = threading.Event()
     try:
       self.exec(cancelled)
@@ -61,8 +60,9 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       raise NotAllowedError(f'Command not Allowed: {cmd}')
     for rep in FLAGS.allowed_commands:
       reg = re.compile(rep)
-      if not reg.match(cmd):
-        raise NotAllowedError(f'Command not Allowed: {cmd}')
+      if reg.match(cmd):
+        return
+    raise NotAllowedError(f'Command not Allowed: {cmd}')
 
   def exec(self, cancelled: threading.Event):
     try:
