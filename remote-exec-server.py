@@ -13,7 +13,7 @@ from queue import Queue, Empty as EmptyQueueError
 
 FLAGS=None
 
-PORT = 5567
+DEFAULT_PORT = 5567
 
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
   def run(self, cmd: list, cwd:str, cancelled: threading.Event):
@@ -82,8 +82,7 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       self.send_header('Content-Type', 'application/octet-stream')
       self.end_headers()
       self.cancel_on_connection_closed(cancelled)
-      cwd = FLAGS.exec_cwd
-      cwd = self.headers.get('CWD', cwd)
+      cwd = self.headers.get('CWD', None)
       for line, code in self.run(cmd, cwd, cancelled):
         if line is not None:
           self.wfile.write(line)
@@ -171,10 +170,13 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
+  parser.add_argument('-p', '--port', metavar='', type=int, help="Port used by server to listen", default=DEFAULT_PORT)
   parser.add_argument('-a', '--allowed-commands', action='append', metavar='', type=str, help="Regex pattern for allowed commands", default=[])
-  parser.add_argument('-c', '--exec-cwd', metavar='', type=str, help="Default directory context", default=None)
+  parser.add_argument('-c', '--cwd', metavar='', type=str, help="Set working directory", default=None)
   FLAGS = parser.parse_args()
-  with ThreadedHTTPServer(("", PORT), HTTPRequestHandler) as server:
-    print(f"Serving at port {PORT}")
+  if FLAGS.cwd:
+    os.chdir(FLAGS.cwd)
+  with ThreadedHTTPServer(("", FLAGS.port), HTTPRequestHandler) as server:
+    print(f"Serving at port {FLAGS.port}")
     print("Server is running... Press Ctrl+C to stop.")
     server.serve_forever()
