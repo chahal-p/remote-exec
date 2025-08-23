@@ -184,7 +184,7 @@ def validateAuth(token: str):
     return False
   now = datetime.now(timezone.utc)
   mintime = now - timedelta(seconds=3)
-  maxtime = now + timedelta(seconds=3)
+  maxtime = now + timedelta(seconds=1)
   parts = token.split('.')
   if len(parts) != 2:
     return False
@@ -210,10 +210,23 @@ def init_authorized_keys():
   public_keys = []
   for file in FLAGS.authorized_key_file:
     with open(file, 'rb') as f:
-      public_key = serialization.load_pem_public_key(
-        f.read(),
-        backend=default_backend()
-      )
+      content = f.read()
+    loaders = [
+      serialization.load_pem_public_key,
+      serialization.load_der_public_key,
+      serialization.load_ssh_public_key
+    ]
+    for loader in loaders:
+      public_key = None
+      try:
+        public_key = loader(
+          data = content,
+          backend=default_backend()
+        )
+      except Exception:
+        pass
+      if public_key:
+        break
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
 
@@ -223,7 +236,7 @@ if __name__ == "__main__":
   parser.add_argument('-p', '--port', metavar='', type=int, help="Port used by server to listen", default=DEFAULT_PORT)
   parser.add_argument('-a', '--allowed-commands', action='append', metavar='', type=str, help="Regex pattern for allowed commands", default=[])
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Set working directory", default=None)
-  parser.add_argument('--authorized-key-file', action='append', metavar='', type=str, help="File path of authorized public key in PEM format", default=[])
+  parser.add_argument('--authorized-key-file', action='append', metavar='', type=str, help="File path of authorized public key, multiple can be specified", default=[])
   parser.add_argument('--disable-auth', metavar='', type=bool, help="Disable authentication", default=False)
   FLAGS = parser.parse_args()
   init_authorized_keys()
