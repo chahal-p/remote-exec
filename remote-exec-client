@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.types import PUBLIC_KEY_TYPES, PRIVATE_KEY_TYPES
+from datetime import datetime, timezone
+
 import argparse
+import base64
 import http.client
 import sys
 
@@ -8,9 +15,22 @@ FLAGS = None
 
 DEFAULT_PORT = 5567
 
-def exec(cmd: list[str]) -> int:
+def get_auth_token(pk_pem_file) -> str:
+  pk_pem = None
+  with open(pk_pem_file, 'rb') as f:
+    pk_pem = f.read()
+  private_key: PRIVATE_KEY_TYPES = serialization.load_pem_private_key(pk_pem, password=None)
+  now_timestamp = datetime.now(tz=timezone.utc).timestamp()
+  data_bytes = str(now_timestamp).encode()
+  sig = private_key.sign(data_bytes, ec.ECDSA(hashes.SHA256()))
+  return '.'.join((base64.b64encode(data_bytes).decode(), base64.b64encode(sig).decode()))
+
+
+def exec(cmd_args: list[str]) -> int:
   returncode = 1
   headers = {}
+  auth_token = get_auth_token(FLAGS.private_key_pem_file)
+  headers['Authorization'] = auth_token
   if FLAGS.cwd:
     headers['CWD'] = FLAGS.cwd
   encoded_cmd = []
@@ -41,6 +61,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Remote exec client sends command to remote server.")
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Sets working directory on remote server to run command", default=None)
   parser.add_argument('-p', '--port', metavar='', type=int, help="Remote exec server port", default=DEFAULT_PORT)
+  parser.add_argument('--private-key-pem-file', metavar='', type=str, help="Private key PEM file, used for token signing", default=DEFAULT_PORT)
   internal_args = []
   cmd_args = []
 

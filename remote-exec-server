@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.types import PUBLIC_KEY_TYPES
+from datetime import datetime, timedelta, timezone
+from queue import Queue, Empty as EmptyQueueError
+
 import argparse
+import base64
 import http.server
 import os
 import re
@@ -9,11 +17,12 @@ import subprocess
 import traceback
 import threading
 import time
-from queue import Queue, Empty as EmptyQueueError
 
 FLAGS=None
 
 DEFAULT_PORT = 5567
+
+AUTHORIZED_PUBLIC_KEYS: list[PUBLIC_KEY_TYPES] = ()
 
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
   def run(self, cmd: list, cwd:str, cancelled: threading.Event):
@@ -23,7 +32,7 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
-      yield stderr_line(str(e)), 1
+      yield stderr_line('{}\n'.format(str(e))), 1
     on_cancellation(cancelled, process.kill)
     for l in output_reader(process.stdout, process.stderr, cancelled):
       yield l, None
@@ -38,6 +47,9 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
   def do_POST(self):
     cancelled = threading.Event()
     try:
+      authtoken = self.headers.get('Authorization', None)
+      if not FLAGS.disable_auth and not validateAuth(authtoken):
+        raise NotAllowedError('Invalid auth token')
       self.exec(cancelled)
       cancelled.set()
     except NotAllowedError as e:
@@ -45,14 +57,14 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       traceback.print_exception(e)
       self.send_response(200)
       self.end_headers()
-      self.wfile.write(stderr_line(str(e)))
+      self.wfile.write(stderr_line('{}\n'.format(str(e))))
       self.wfile.write(returncode_line(1))
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
       self.send_response(500)
       self.end_headers()
-      self.wfile.write(stderr_line('Internal Server Error'))
+      self.wfile.write(stderr_line('Internal Server Error\n'))
       self.wfile.write(returncode_line(1))
 
   def validate_cmd(self, cmd):
@@ -167,13 +179,54 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
     except EmptyQueueError:
       pass
 
+def validateAuth(token: str):
+  if not token:
+    return False
+  now = datetime.now(timezone.utc)
+  mintime = now - timedelta(seconds=3)
+  maxtime = now + timedelta(seconds=3)
+  parts = token.split('.')
+  if len(parts) != 2:
+    return False
+  data_bytes, sig_bytes = base64.b64decode(parts[0]), base64.b64decode(parts[1])
+  if not verify_sig(sig_bytes, data_bytes):
+    return False
+  token_timestamp = datetime.fromtimestamp(float(data_bytes.decode()), timezone.utc)
+  if token_timestamp > mintime and token_timestamp < maxtime:
+    return True
+  return False
+
+def verify_sig(sig_bytes, data_bytes):
+  for public_key in AUTHORIZED_PUBLIC_KEYS:
+    try:
+      public_key.verify(sig_bytes, data_bytes, signature_algorithm=ec.ECDSA(hashes.SHA256()))
+      return True
+    except Exception as e:
+      pass
+  return False
+
+def init_authorized_keys():
+  global AUTHORIZED_PUBLIC_KEYS
+  public_keys = []
+  for file in FLAGS.authorized_key_file:
+    with open(file, 'rb') as f:
+      public_key = serialization.load_pem_public_key(
+        f.read(),
+        backend=default_backend()
+      )
+    public_keys.append(public_key)
+  AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
+
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
   parser.add_argument('-p', '--port', metavar='', type=int, help="Port used by server to listen", default=DEFAULT_PORT)
   parser.add_argument('-a', '--allowed-commands', action='append', metavar='', type=str, help="Regex pattern for allowed commands", default=[])
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Set working directory", default=None)
+  parser.add_argument('--authorized-key-file', action='append', metavar='', type=str, help="File path of authorized public key in PEM format", default=[])
+  parser.add_argument('--disable-auth', metavar='', type=bool, help="Disable authentication", default=False)
   FLAGS = parser.parse_args()
+  init_authorized_keys()
   if FLAGS.cwd:
     os.chdir(FLAGS.cwd)
   with ThreadedHTTPServer(("", FLAGS.port), HTTPRequestHandler) as server:
