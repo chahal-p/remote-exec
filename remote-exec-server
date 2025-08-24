@@ -2,7 +2,7 @@
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448
 from cryptography.hazmat.primitives.asymmetric.types import PUBLIC_KEY_TYPES
 from datetime import datetime, timedelta, timezone
 from queue import Queue, Empty as EmptyQueueError
@@ -23,6 +23,14 @@ FLAGS=None
 DEFAULT_PORT = 5567
 
 AUTHORIZED_PUBLIC_KEYS: list[PUBLIC_KEY_TYPES] = ()
+
+SUPPORTED_KEY_TYPES = [
+  dsa.DSAPublicKey,
+  rsa.RSAPublicKey,
+  ec.EllipticCurvePublicKey,
+  ed25519.Ed25519PublicKey,
+  ed448.Ed448PublicKey,
+]
 
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
   def run(self, cmd: list, cwd:str, cancelled: threading.Event):
@@ -47,9 +55,13 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
   def do_POST(self):
     cancelled = threading.Event()
     try:
-      authtoken = self.headers.get('Authorization', None)
-      if not FLAGS.disable_auth and not validateAuth(authtoken):
-        raise NotAllowedError('Invalid auth token')
+      if not FLAGS.disable_auth:
+        authtoken = self.headers.get('Authorization', None)
+        if authtoken:
+          if not validateAuth(authtoken):
+            raise NotAllowedError('Invalid auth token')
+        else:
+          raise NotAllowedError('Auth token not provided')
       self.exec(cancelled)
       cancelled.set()
     except NotAllowedError as e:
@@ -130,6 +142,9 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 class NotAllowedError(Exception):
   pass
 
+class KeyTypeNotSupported(Exception):
+  pass
+
 
 def hexstr(data: str|bytes|int):
   if isinstance(data, bytes):
@@ -199,14 +214,17 @@ def validateAuth(token: str):
 def verify_sig(sig_bytes, data_bytes):
   for public_key in AUTHORIZED_PUBLIC_KEYS:
     try:
-      public_key.verify(sig_bytes, data_bytes, signature_algorithm=ec.ECDSA(hashes.SHA256()))
+      if isinstance(public_key, ec.EllipticCurvePublicKey):
+        public_key.verify(signature=sig_bytes, data=data_bytes, signature_algorithm=ec.ECDSA(hashes.SHA256()))
+      else:
+        public_key.verify(signature=sig_bytes, data=data_bytes, algorithm=hashes.SHA256())
       return True
     except Exception as e:
       pass
   return False
 
 def init_authorized_keys():
-  global AUTHORIZED_PUBLIC_KEYS
+  global AUTHORIZED_PUBLIC_KEYS, SUPPORTED_KEY_TYPES
   public_keys = []
   for file in FLAGS.authorized_key_file:
     with open(file, 'rb') as f:
@@ -227,9 +245,15 @@ def init_authorized_keys():
         pass
       if public_key:
         break
+    supported = False
+    for key_type_cls in SUPPORTED_KEY_TYPES:
+      if isinstance(public_key, key_type_cls):
+        supported = True
+        break
+    if not supported:
+      raise KeyTypeNotSupported('Key type not supported')
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
-
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")

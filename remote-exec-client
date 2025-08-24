@@ -2,7 +2,7 @@
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
 from cryptography.hazmat.primitives.asymmetric.types import PUBLIC_KEY_TYPES, PRIVATE_KEY_TYPES
 from datetime import datetime, timezone
 
@@ -14,6 +14,14 @@ import sys
 FLAGS = None
 
 DEFAULT_PORT = 5567
+
+SUPPORTED_KEY_TYPES = [
+  dsa.DSAPrivateKey,
+  rsa.RSAPrivateKey,
+  ec.EllipticCurvePrivateKey,
+  ed25519.Ed25519PrivateKey,
+  ed448.Ed448PrivateKey,
+]
 
 def get_auth_token(pk_file) -> str:
   private_key: PRIVATE_KEY_TYPES = None
@@ -37,14 +45,25 @@ def get_auth_token(pk_file) -> str:
       pass
   now_timestamp = datetime.now(tz=timezone.utc).timestamp()
   data_bytes = str(now_timestamp).encode()
-  sig = private_key.sign(data_bytes, ec.ECDSA(hashes.SHA256()))
+  sig = None
+  if isinstance(private_key, ec.EllipticCurvePrivateKey):
+    sig = private_key.sign(data=data_bytes, signature_algorithm=ec.ECDSA(hashes.SHA256()))
+  elif isinstance(private_key, rsa.RSAPrivateKey):
+    p = padding.PSS(
+      mgf=padding.MGF1(hashes.SHA256()),
+      salt_length=padding.PSS.MAX_LENGTH
+    )
+    sig = private_key.sign(data=data_bytes, padding=p, algorithm=hashes.SHA256())
+  else:
+    sig = private_key.sign(data=data_bytes, algorithm=hashes.SHA256())
   return '.'.join((base64.b64encode(data_bytes).decode(), base64.b64encode(sig).decode()))
 
 def exec(cmd_args: list[str]) -> int:
   returncode = 1
   headers = {}
-  auth_token = get_auth_token(FLAGS.private_key)
-  headers['Authorization'] = auth_token
+  if FLAGS.private_key:
+    auth_token = get_auth_token(FLAGS.private_key)
+    headers['Authorization'] = auth_token
   if FLAGS.cwd:
     headers['CWD'] = FLAGS.cwd
   encoded_cmd = []
@@ -75,7 +94,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Remote exec client sends command to remote server.")
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Sets working directory on remote server to run command", default=None)
   parser.add_argument('-p', '--port', metavar='', type=int, help="Remote exec server port", default=DEFAULT_PORT)
-  parser.add_argument('--private-key', metavar='', type=str, help="Private key file, used for token signing", default=DEFAULT_PORT)
+  parser.add_argument('--private-key', metavar='', type=str, help="Private key file, used for token signing", default=None)
   internal_args = []
   cmd_args = []
 
