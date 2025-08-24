@@ -267,8 +267,10 @@ if __name__ == "__main__":
   parser.add_argument('-a', '--allowed-commands', action='append', metavar='', type=str, help="Regex pattern for allowed commands, to allow all commands specify '.*'", default=[])
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Set working directory", default=None)
   parser.add_argument('--authorized-key-file', action='append', metavar='', type=str, help="File path of authorized public key, multiple can be specified", default=[])
-  parser.add_argument('--disable-auth', metavar='', type=bool, help="Disable authentication", default=False)
+  parser.add_argument('--disable-auth', action='store_true', help="Disable authentication")
   FLAGS = parser.parse_args()
+  if not FLAGS.disable_auth and len(FLAGS.authorized_key_file) == 0:
+    raise ValueError('--authorized-key-file is a required arg if --disable-auth is not specified.')
   init_authorized_keys()
   if FLAGS.cwd:
     os.chdir(FLAGS.cwd)
