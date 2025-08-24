@@ -264,7 +264,7 @@ def init_authorized_keys():
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
   parser.add_argument('-p', '--port', metavar='', type=int, help="Port used by server to listen", default=DEFAULT_PORT)
-  parser.add_argument('-a', '--allowed-commands', action='append', metavar='', type=str, help="Regex pattern for allowed commands", default=[])
+  parser.add_argument('-a', '--allowed-commands', action='append', metavar='', type=str, help="Regex pattern for allowed commands, to allow all commands specify '.*'", default=[])
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Set working directory", default=None)
   parser.add_argument('--authorized-key-file', action='append', metavar='', type=str, help="File path of authorized public key, multiple can be specified", default=[])
   parser.add_argument('--disable-auth', metavar='', type=bool, help="Disable authentication", default=False)

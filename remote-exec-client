@@ -94,7 +94,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Remote exec client sends command to remote server.")
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Sets working directory on remote server to run command", default=None)
   parser.add_argument('-p', '--port', metavar='', type=int, help="Remote exec server port", default=DEFAULT_PORT)
-  parser.add_argument('--private-key', metavar='', type=str, help="Private key file, used for token signing", default=None)
+  parser.add_argument('--private-key', metavar='', type=str, help="Private key file, used for auth token signing", default=None)
   internal_args = []
   cmd_args = []
 
