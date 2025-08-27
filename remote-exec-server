@@ -3,7 +3,7 @@
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
-from cryptography.hazmat.primitives.asymmetric.types import PUBLIC_KEY_TYPES
+from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from datetime import datetime, timedelta, timezone
 from queue import Queue, Empty as EmptyQueueError
 
@@ -22,7 +22,7 @@ FLAGS=None
 
 DEFAULT_PORT = 5567
 
-AUTHORIZED_PUBLIC_KEYS: list[PUBLIC_KEY_TYPES] = ()
+AUTHORIZED_PUBLIC_KEYS: list[PublicKeyTypes] = ()
 
 SUPPORTED_KEY_TYPES = [
   dsa.DSAPublicKey,
