@@ -90,6 +90,8 @@ def exec(cmd_args: list[str]) -> int:
   except ConnectionRefusedError:
     print(f"Connection refused at port {FLAGS.port}")
     returncode = 1
+  except KeyboardInterrupt:
+    returncode = 1
   finally:
     conn.close()
   return returncode
