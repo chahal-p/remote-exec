@@ -3,7 +3,7 @@
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
-from cryptography.hazmat.primitives.asymmetric.types import PUBLIC_KEY_TYPES, PRIVATE_KEY_TYPES
+from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from datetime import datetime, timezone
 
 import argparse
@@ -24,7 +24,7 @@ SUPPORTED_KEY_TYPES = [
 ]
 
 def get_auth_token(pk_file) -> str:
-  private_key: PRIVATE_KEY_TYPES = None
+  private_key: PrivateKeyTypes = None
   content = None
   with open(pk_file, 'rb') as f:
     content = f.read()
@@ -72,7 +72,11 @@ def exec(cmd_args: list[str]) -> int:
   try:
     conn = http.client.HTTPConnection('localhost', FLAGS.port)
     conn.request('POST', '/', headers=headers, body=':'.join(encoded_cmd))
-    res = conn.getresponse()
+    try:
+      res = conn.getresponse()
+    except ConnectionResetError:
+      print("Connection reset by peer")
+      return 1
     if res.status != http.client.OK:
       sys.stderr.write(res.reason)
       return
