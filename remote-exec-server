@@ -12,7 +12,6 @@ import base64
 import http.server
 import os
 import re
-import socketserver
 import subprocess
 import traceback
 import threading
@@ -133,10 +132,6 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
           break
         time.sleep(5)
     threading.Thread(target=checker).start()
-
-
-class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-  pass
 
 
 class NotAllowedError(Exception):
@@ -274,7 +269,7 @@ if __name__ == "__main__":
   init_authorized_keys()
   if FLAGS.cwd:
     os.chdir(FLAGS.cwd)
-  with ThreadedHTTPServer(("", FLAGS.port), HTTPRequestHandler) as server:
+  with http.server.ThreadingHTTPServer(("", FLAGS.port), HTTPRequestHandler) as server:
     print(f"Serving at port {FLAGS.port}")
     print("Server is running... Press Ctrl+C to stop.")
     server.serve_forever()
