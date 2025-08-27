@@ -72,11 +72,7 @@ def exec(cmd_args: list[str]) -> int:
   try:
     conn = http.client.HTTPConnection('localhost', FLAGS.port)
     conn.request('POST', '/', headers=headers, body=':'.join(encoded_cmd))
-    try:
-      res = conn.getresponse()
-    except ConnectionResetError:
-      print("Connection reset by peer")
-      return 1
+    res = conn.getresponse()
     if res.status != http.client.OK:
       sys.stderr.write(res.reason)
       return
@@ -88,6 +84,12 @@ def exec(cmd_args: list[str]) -> int:
         sys.stderr.write(bytes.fromhex(line[7:]).decode())
       elif line.startswith('CODE:'):
         returncode = int(bytes.fromhex(line[5:]).decode())
+  except ConnectionResetError:
+    print(f"Connection reset by peer at port {FLAGS.port}")
+    returncode = 1
+  except ConnectionRefusedError:
+    print(f"Connection refused at port {FLAGS.port}")
+    returncode = 1
   finally:
     conn.close()
   return returncode
