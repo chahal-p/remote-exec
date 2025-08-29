@@ -23,47 +23,6 @@ SUPPORTED_KEY_TYPES = [
   ed448.Ed448PrivateKey,
 ]
 
-def get_auth_token(pk_file) -> str:
-  private_key: PrivateKeyTypes = None
-  content = None
-  with open(pk_file, 'rb') as f:
-    content = f.read()
-  loaders = [
-      serialization.load_pem_private_key,
-      serialization.load_der_private_key,
-      serialization.load_ssh_private_key
-    ]
-  for loader in loaders:
-    try:
-      private_key = loader(
-        data = content,
-        backend=default_backend(),
-        password=None
-      )
-      break
-    except Exception:
-      pass
-  now_timestamp = datetime.now(tz=timezone.utc).timestamp()
-  data_bytes = str(now_timestamp).encode()
-  sig = None
-  if isinstance(private_key, ec.EllipticCurvePrivateKey):
-    sig = private_key.sign(data=data_bytes, signature_algorithm=ec.ECDSA(hashes.SHA256()))
-  elif isinstance(private_key, rsa.RSAPrivateKey):
-    p = padding.PSS(
-      mgf=padding.MGF1(hashes.SHA256()),
-      salt_length=padding.PSS.MAX_LENGTH
-    )
-    sig = private_key.sign(data=data_bytes, padding=p, algorithm=hashes.SHA256())
-  else:
-    sig = private_key.sign(data=data_bytes, algorithm=hashes.SHA256())
-  return '.'.join((base64.b64encode(data_bytes).decode(), base64.b64encode(sig).decode()))
-
-def stream_body(cmd: str):
-  yield cmd.encode()
-  if not sys.stdin.isatty():
-    for line in sys.stdin:
-      yield line.encode()
-
 def exec(cmd_args: list[str]) -> int:
   returncode = 1
   headers = {}
@@ -101,6 +60,47 @@ def exec(cmd_args: list[str]) -> int:
   finally:
     conn.close()
   return returncode
+
+def get_auth_token(pk_file) -> str:
+  private_key: PrivateKeyTypes = None
+  content = None
+  with open(pk_file, 'rb') as f:
+    content = f.read()
+  loaders = [
+      serialization.load_pem_private_key,
+      serialization.load_der_private_key,
+      serialization.load_ssh_private_key,
+    ]
+  for loader in loaders:
+    try:
+      private_key = loader(
+        data = content,
+        backend=default_backend(),
+        password=None
+      )
+      break
+    except Exception:
+      pass
+  now_timestamp = datetime.now(tz=timezone.utc).timestamp()
+  data_bytes = str(now_timestamp).encode()
+  sig = None
+  if isinstance(private_key, ec.EllipticCurvePrivateKey):
+    sig = private_key.sign(data=data_bytes, signature_algorithm=ec.ECDSA(hashes.SHA256()))
+  elif isinstance(private_key, rsa.RSAPrivateKey):
+    p = padding.PSS(
+      mgf=padding.MGF1(hashes.SHA256()),
+      salt_length=padding.PSS.MAX_LENGTH
+    )
+    sig = private_key.sign(data=data_bytes, padding=p, algorithm=hashes.SHA256())
+  else:
+    sig = private_key.sign(data=data_bytes, algorithm=hashes.SHA256())
+  return '.'.join((base64.b64encode(data_bytes).decode(), base64.b64encode(sig).decode()))
+
+def stream_body(cmd: str):
+  yield cmd.encode()
+  if not sys.stdin.isatty():
+    for line in sys.stdin:
+      yield line.encode()
 
 
 if __name__ == "__main__":
