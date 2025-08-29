@@ -32,15 +32,18 @@ SUPPORTED_KEY_TYPES = [
 ]
 
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
-  def run(self, cmd: list, cwd:str, cancelled: threading.Event):
+  def run(self, cmd: list, cwd:str, stdin_reader, cancelled: threading.Event):
     self.validate_cmd(' '.join(cmd))
     try:
-      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
       yield stderr_line('{}\n'.format(str(e))), 1
     on_cancellation(cancelled, process.kill)
+    for data in stdin_reader():
+      process.stdin.write(data)
+    process.stdin.close()
     for l in output_reader(process.stdout, process.stderr, cancelled):
       yield l, None
     for _ in range(10):
@@ -91,22 +94,21 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
   def exec(self, cancelled: threading.Event):
     try:
-      if 'Content-Length' not in self.headers:
-        raise ValueError("Content-Length header not provided")
       clientaddr, _ = self.client_address
       if clientaddr != '127.0.0.1':
         raise NotAllowedError('exec server can only recieve request from 127.0.0.1')
-      content_length = int(self.headers['Content-Length'])
-      post_data_hex = self.rfile.read(content_length).decode('utf-8')
+      if 'Transfer-Encoding' not in self.headers or self.headers['Transfer-Encoding'] != 'chunked':
+        raise NotAbleToParseBody('Transfer-Encoding header should be chunked')
+      hex_cmd, stdin_reader = read_body(self.rfile)
       cmd = []
-      for arg in post_data_hex.split(':'):
+      for arg in hex_cmd.split(':'):
         cmd.append(bytes.fromhex(arg).decode('utf-8'))
       self.send_response(200)
       self.send_header('Content-Type', 'application/octet-stream')
       self.end_headers()
       self.cancel_on_connection_closed(cancelled)
       cwd = self.headers.get('CWD', None)
-      for line, code in self.run(cmd, cwd, cancelled):
+      for line, code in self.run(cmd, cwd, stdin_reader=stdin_reader, cancelled=cancelled):
         if line is not None:
           self.wfile.write(line)
         if code is not None:
@@ -140,6 +142,23 @@ class NotAllowedError(Exception):
 class KeyTypeNotSupported(Exception):
   pass
 
+class NotAbleToParseBody(Exception):
+  pass
+
+def read_body(stream):
+  s = int(stream.readline().decode().rstrip("\r\n"), base=16)
+  cmd = stream.read(s).decode()
+  if stream.read(2) != b'\r\n':
+    raise NotAbleToParseBody()
+  def wrap():
+    while True:
+      s = int(stream.readline().decode().rstrip("\r\n"), base=16)
+      if s == 0:
+        return
+      yield stream.read(s)
+      if stream.read(2) != b'\r\n':
+        raise NotAbleToParseBody()
+  return cmd, wrap
 
 def hexstr(data: str|bytes|int):
   if isinstance(data, bytes):
