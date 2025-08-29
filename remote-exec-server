@@ -32,7 +32,57 @@ SUPPORTED_KEY_TYPES = [
 ]
 
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
-  def run(self, cmd: list, cwd:str, stdin_reader, cancelled: threading.Event):
+  def do_POST(self):
+    cancelled = threading.Event()
+    try:
+      self.validate_auth()
+      self.process_request(cancelled)
+      cancelled.set()
+    except NotAllowedError as e:
+      cancelled.set()
+      traceback.print_exception(e)
+      self.send_response(200)
+      self.end_headers()
+      self.wfile.write(stderr_line('{}\n'.format(str(e))))
+      self.wfile.write(returncode_line(1))
+    except Exception as e:
+      cancelled.set()
+      traceback.print_exception(e)
+      self.send_response(500)
+      self.end_headers()
+      self.wfile.write(stderr_line('Internal Server Error\n'))
+      self.wfile.write(returncode_line(1))
+
+  def process_request(self, cancelled: threading.Event):
+    try:
+      clientaddr, _ = self.client_address
+      if clientaddr != '127.0.0.1':
+        raise NotAllowedError('exec server can only recieve request from 127.0.0.1')
+      if 'Transfer-Encoding' not in self.headers or self.headers['Transfer-Encoding'] != 'chunked':
+        raise NotAbleToParseBody('Transfer-Encoding header should be chunked')
+      hex_cmd, stdin_reader = read_body(self.rfile)
+      cmd = []
+      for arg in hex_cmd.split(':'):
+        cmd.append(bytes.fromhex(arg).decode('utf-8'))
+      self.send_response(200)
+      self.send_header('Content-Type', 'application/octet-stream')
+      self.end_headers()
+      self.cancel_on_connection_closed(cancelled)
+      cwd = self.headers.get('CWD', None)
+      for line, code in self.exec_cmd(cmd, cwd, stdin_reader=stdin_reader, cancelled=cancelled):
+        if line is not None:
+          self.wfile.write(line)
+        if code is not None:
+          self.wfile.write(returncode_line(code))
+    except ValueError as e:
+      cancelled.set()
+      traceback.print_exception(e)
+      self.send_response(400)
+      self.end_headers()
+      self.wfile.write(stderr_line(str(e)))
+      self.wfile.write(returncode_line(2))
+
+  def exec_cmd(self, cmd: list, cwd:str, stdin_reader, cancelled: threading.Event):
     self.validate_cmd(' '.join(cmd))
     try:
       process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
@@ -54,33 +104,6 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         pass
     yield None, process.returncode
 
-  def do_POST(self):
-    cancelled = threading.Event()
-    try:
-      if not FLAGS.disable_auth:
-        authtoken = self.headers.get('Authorization', None)
-        if authtoken:
-          if not validateAuth(authtoken):
-            raise NotAllowedError('Invalid auth token')
-        else:
-          raise NotAllowedError('Auth token not provided')
-      self.exec(cancelled)
-      cancelled.set()
-    except NotAllowedError as e:
-      cancelled.set()
-      traceback.print_exception(e)
-      self.send_response(200)
-      self.end_headers()
-      self.wfile.write(stderr_line('{}\n'.format(str(e))))
-      self.wfile.write(returncode_line(1))
-    except Exception as e:
-      cancelled.set()
-      traceback.print_exception(e)
-      self.send_response(500)
-      self.end_headers()
-      self.wfile.write(stderr_line('Internal Server Error\n'))
-      self.wfile.write(returncode_line(1))
-
   def validate_cmd(self, cmd):
     if not FLAGS.allowed_commands:
       raise NotAllowedError(f'Command not Allowed: {cmd}')
@@ -91,35 +114,15 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       if reg.match(cmd):
         return
     raise NotAllowedError(f'Command not Allowed: {cmd}')
-
-  def exec(self, cancelled: threading.Event):
-    try:
-      clientaddr, _ = self.client_address
-      if clientaddr != '127.0.0.1':
-        raise NotAllowedError('exec server can only recieve request from 127.0.0.1')
-      if 'Transfer-Encoding' not in self.headers or self.headers['Transfer-Encoding'] != 'chunked':
-        raise NotAbleToParseBody('Transfer-Encoding header should be chunked')
-      hex_cmd, stdin_reader = read_body(self.rfile)
-      cmd = []
-      for arg in hex_cmd.split(':'):
-        cmd.append(bytes.fromhex(arg).decode('utf-8'))
-      self.send_response(200)
-      self.send_header('Content-Type', 'application/octet-stream')
-      self.end_headers()
-      self.cancel_on_connection_closed(cancelled)
-      cwd = self.headers.get('CWD', None)
-      for line, code in self.run(cmd, cwd, stdin_reader=stdin_reader, cancelled=cancelled):
-        if line is not None:
-          self.wfile.write(line)
-        if code is not None:
-          self.wfile.write(returncode_line(code))
-    except ValueError as e:
-      cancelled.set()
-      traceback.print_exception(e)
-      self.send_response(400)
-      self.end_headers()
-      self.wfile.write(stderr_line(str(e)))
-      self.wfile.write(returncode_line(2))
+  
+  def validate_auth(self):
+    if not FLAGS.disable_auth:
+      authtoken = self.headers.get('Authorization', None)
+      if authtoken:
+        if not validate_token(authtoken):
+          raise NotAllowedError('Invalid auth token')
+      else:
+        raise NotAllowedError('Auth token not provided')
 
   def cancel_on_connection_closed(self, cancelled: threading.Event):
     def checker():
@@ -136,15 +139,6 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     threading.Thread(target=checker).start()
 
 
-class NotAllowedError(Exception):
-  pass
-
-class KeyTypeNotSupported(Exception):
-  pass
-
-class NotAbleToParseBody(Exception):
-  pass
-
 def read_body(stream):
   s = int(stream.readline().decode().rstrip("\r\n"), base=16)
   cmd = stream.read(s).decode()
@@ -160,40 +154,6 @@ def read_body(stream):
         raise NotAbleToParseBody()
   return cmd, wrap
 
-def hexstr(data: str|bytes|int):
-  if isinstance(data, bytes):
-    return bytes.hex(data)
-  return bytes.hex(str(data).encode())
-
-def output_line(type: str, line: str|bytes|int) -> bytes:
-  return '{}:{}\n'.format(type, hexstr(line)).encode('utf-8')
-
-def stdout_line(line: str|bytes) -> bytes:
-  return output_line('STDOUT', line)
-
-def stderr_line(line: str|bytes) -> bytes:
-  return output_line('STDERR', line)
-
-def returncode_line(code: int) -> bytes:
-  return output_line('CODE', code)
-
-def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
-  def checker():
-    while True:
-      if cancelled.is_set():
-        callback(*args, **kwargs)
-        break
-      time.sleep(0.1)
-  threading.Thread(target=checker).start()
-
-def read_from_pipe(pipe, queue: Queue, type: str, done: threading.Event, cancelled: threading.Event):
-  with pipe:
-    for line in iter(pipe.readline, b''):
-      if cancelled.is_set():
-        break
-      queue.put(output_line(type, line))
-  done.set()
-
 def output_reader(stdout, stderr, cancelled: threading.Event):
   queue = Queue()
   done_stdout = threading.Event()
@@ -208,7 +168,41 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
     except EmptyQueueError:
       pass
 
-def validateAuth(token: str):
+def output_line(type: str, line: str|bytes|int) -> bytes:
+  return '{}:{}\n'.format(type, hexstr(line)).encode('utf-8')
+
+def stdout_line(line: str|bytes) -> bytes:
+  return output_line('STDOUT', line)
+
+def stderr_line(line: str|bytes) -> bytes:
+  return output_line('STDERR', line)
+
+def returncode_line(code: int) -> bytes:
+  return output_line('CODE', code)
+
+def read_from_pipe(pipe, queue: Queue, type: str, done: threading.Event, cancelled: threading.Event):
+  with pipe:
+    for line in iter(pipe.readline, b''):
+      if cancelled.is_set():
+        break
+      queue.put(output_line(type, line))
+  done.set()
+
+def hexstr(data: str|bytes|int):
+  if isinstance(data, bytes):
+    return bytes.hex(data)
+  return bytes.hex(str(data).encode())
+
+def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
+  def checker():
+    while True:
+      if cancelled.is_set():
+        callback(*args, **kwargs)
+        break
+      time.sleep(0.1)
+  threading.Thread(target=checker).start()
+
+def validate_token(token: str):
   if not token:
     return False
   now = datetime.now(timezone.utc)
@@ -274,6 +268,17 @@ def init_authorized_keys():
       raise KeyTypeNotSupported('Key type not supported')
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
+
+
+class NotAllowedError(Exception):
+  pass
+
+class KeyTypeNotSupported(Exception):
+  pass
+
+class NotAbleToParseBody(Exception):
+  pass
+
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
