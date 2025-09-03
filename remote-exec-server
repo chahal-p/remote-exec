@@ -86,7 +86,8 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     self.validate_cmd(' '.join(cmd))
     process = None
     try:
-      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+      stdin_read_fd, stdin_write_fd = os.pipe()
+      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin_read_fd)
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
@@ -94,7 +95,7 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     if not process:
       return
     on_cancellation(cancelled, process_killer(process))
-    stream_stdin(self.rfile, process.stdin, cancelled)
+    stream_stdin(self.rfile, stdin_write_fd, cancelled)
     for l in output_reader(process.stdout, process.stderr, cancelled):
       yield l, None
     for _ in range(10):
@@ -144,10 +145,10 @@ def stream_stdin(src, dest, cancelled: threading.Event):
     try:
       data = read_chunk_from_request_body(src)
       while data and not cancelled.is_set():
-        dest.write(data)
+        os.write(dest, data)
         data = read_chunk_from_request_body(src)
     finally:
-      dest.close()
+      os.close(dest)
   t = threading.Thread(target=wrap)
   t.start()
 
@@ -210,14 +211,15 @@ def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
     while True:
       if cancelled.is_set():
         callback(*args, **kwargs)
-        break
-      time.sleep(0.1)
+        return
+      time.sleep(0.5)
   threading.Thread(target=checker).start()
 
 def process_killer(process):
     def wrap():
-      process.kill()
-      print(f'Process {process.pid} killed!')
+      if process.returncode is None:
+        process.kill()
+        print(f'Process {process.pid} killed!')
     return wrap
 
 def validate_token(token: str):
