@@ -92,6 +92,8 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       cancelled.set()
       traceback.print_exception(e)
       yield stderr_line('{}\n'.format(str(e))), 1
+    finally:
+      close_fds_on_completion(process, stdin_read_fd)
     if not process:
       return
     on_cancellation(cancelled, process_killer(process))
@@ -214,6 +216,17 @@ def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
         return
       time.sleep(0.5)
   threading.Thread(target=checker).start()
+
+def close_fds_on_completion(process, *fds):
+  def closer():
+    if process:
+      process.wait()
+    for fd in fds:
+      try:
+        os.close(fd)
+      except Exception:
+        pass
+  threading.Thread(target=closer).start()
 
 def process_killer(process):
     def wrap():
