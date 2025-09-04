@@ -36,7 +36,10 @@ def exec(cmd_args: list[str]) -> int:
     encoded_cmd.append(bytes.hex(arg.encode()))
   try:
     conn = http.client.HTTPConnection('localhost', FLAGS.port)
-    conn.request('POST', '/', headers=headers, body=stream_body(':'.join(encoded_cmd)))
+    headers['Transfer-Encoding'] = 'chunked'
+    headers['Content-Type'] = 'application/octet-stream'
+    conn.request('POST', '/', headers=headers, encode_chunked=True)
+    stream_body(conn, ':'.join(encoded_cmd))
     res = conn.getresponse()
     if res.status != http.client.OK:
       sys.stderr.write(res.reason)
@@ -96,12 +99,18 @@ def get_auth_token(pk_file) -> str:
     sig = private_key.sign(data=data_bytes, algorithm=hashes.SHA256())
   return '.'.join((base64.b64encode(data_bytes).decode(), base64.b64encode(sig).decode()))
 
-def stream_body(cmd: str):
-  yield cmd.encode()
-  if not sys.stdin.isatty():
-    for line in sys.stdin:
-      yield line.encode()
+def encode_http_chunk(data: bytes):
+  return f'{len(data):x}\r\n'.encode() + data + b'\r\n'
 
+def stream_body(conn: http.client.HTTPConnection, cmd: str):
+  def input_reader():
+    yield encode_http_chunk(cmd.encode())
+    if not sys.stdin.isatty():
+      for line in sys.stdin:
+        yield encode_http_chunk(line.encode())
+    yield b'0\r\n\r\n'
+  for chunk in input_reader():
+    conn.send(chunk)
 
 if __name__ == "__main__":
   all_args = sys.argv[1:]
