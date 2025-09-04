@@ -155,11 +155,17 @@ def stream_stdin(src, dest, cancelled: threading.Event):
   t.start()
 
 def read_chunk_from_request_body(stream):
-  chunk_size_line: str = stream.readline().decode()
-  if not chunk_size_line.endswith('\r\n'):
+  chunk_size_line = b''
+  while True:
+    chunk_size_line += stream.read(1)
+    if not chunk_size_line:
+      break
+    if chunk_size_line[-2:] == b'\r\n':
+      break
+  if not chunk_size_line.endswith(b'\r\n'):
     raise NotAbleToParseBody()
   try:
-    chunk_size = int(chunk_size_line.rstrip("\r\n"), base=16)
+    chunk_size = int(chunk_size_line.rstrip(b'\r\n'), base=16)
   except ValueError:
     raise NotAbleToParseBody()
   if chunk_size == 0:
