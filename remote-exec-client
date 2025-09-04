@@ -118,6 +118,7 @@ if __name__ == "__main__":
   parser.add_argument('-c', '--cwd', metavar='', type=str, help="Sets working directory on remote server to run command", default=None)
   parser.add_argument('-p', '--port', metavar='', type=int, help="Remote exec server port", default=DEFAULT_PORT)
   parser.add_argument('--private-key', metavar='', type=str, help="Private key file, used for auth token signing", default=None)
+  parser.add_argument('--debug', action='store_true', help="Enable debug logging")
   internal_args = []
   cmd_args = []
 
@@ -128,4 +129,6 @@ if __name__ == "__main__":
   internal_args = all_args[:split_idx]
   cmd_args = all_args[split_idx+1:]
   FLAGS = parser.parse_args(internal_args)
+  if FLAGS.debug:
+    http.client.HTTPConnection.debuglevel = 1
   sys.exit(exec(cmd_args))
