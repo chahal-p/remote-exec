@@ -32,6 +32,9 @@ SUPPORTED_KEY_TYPES = [
 ]
 
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
+
+  protocol_version = 'HTTP/1.1'
+
   def do_POST(self):
     cancelled = threading.Event()
     try:
