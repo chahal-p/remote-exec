@@ -31,7 +31,44 @@ SUPPORTED_KEY_TYPES = [
   ed448.Ed448PublicKey,
 ]
 
+class CommandHandler():
+
+  def exec(self, cmd: list, cwd:str, stdin, cancelled: threading.Event):
+    self.validate_cmd(' '.join(cmd))
+    process = None
+    try:
+      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin)
+    except Exception as e:
+      cancelled.set()
+      traceback.print_exception(e)
+      yield stderr_line('{}\n'.format(str(e))), 1
+    if not process:
+      return
+    on_cancellation(cancelled, process_killer(process))
+    for l in output_reader(process.stdout, process.stderr, cancelled):
+      yield l, None
+    for _ in range(10):
+      try:
+        process.wait(1)
+        break
+      except subprocess.TimeoutExpired:
+        pass
+    yield None, process.returncode
+
+  def validate_cmd(self, cmd):
+    if not FLAGS.allowed_commands:
+      raise NotAllowedError(f'Command not Allowed: {cmd}')
+    for rep in FLAGS.allowed_commands:
+      if rep == '':
+        continue
+      reg = re.compile(rep)
+      if reg.match(cmd):
+        return
+    raise NotAllowedError(f'Command not Allowed: {cmd}')
+  
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
+
+  cmd_handler = CommandHandler()
 
   protocol_version = 'HTTP/1.1'
   server_version = 'http.server/0.7'
@@ -73,7 +110,9 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       self.end_headers()
       self.cancel_on_connection_closed(cancelled)
       cwd = self.headers.get('CWD', None)
-      for line, code in self.exec_cmd(cmd, cwd, cancelled=cancelled):
+      stdin_read_fd, stdin_write_fd = os.pipe()
+      stream_stdin(self.rfile, stdin_write_fd, cancelled)
+      for line, code in self.cmd_handler.exec(cmd, cwd, stdin_read_fd, cancelled=cancelled):
         if line is not None:
           self.wfile.write(line)
         if code is not None:
@@ -85,44 +124,9 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(stderr_line(str(e)))
       self.wfile.write(returncode_line(2))
-
-  def exec_cmd(self, cmd: list, cwd:str, cancelled: threading.Event):
-    self.validate_cmd(' '.join(cmd))
-    process = None
-    stdin_read_fd, stdin_write_fd = os.pipe()
-    try:
-      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin_read_fd)
-    except Exception as e:
-      cancelled.set()
-      traceback.print_exception(e)
-      yield stderr_line('{}\n'.format(str(e))), 1
     finally:
-      close_fds_on_completion(process, stdin_read_fd)
-    if not process:
-      return
-    on_cancellation(cancelled, process_killer(process))
-    stream_stdin(self.rfile, stdin_write_fd, cancelled)
-    for l in output_reader(process.stdout, process.stderr, cancelled):
-      yield l, None
-    for _ in range(10):
-      try:
-        process.wait(1)
-        break
-      except subprocess.TimeoutExpired:
-        pass
-    yield None, process.returncode
+      os.close(stdin_read_fd)
 
-  def validate_cmd(self, cmd):
-    if not FLAGS.allowed_commands:
-      raise NotAllowedError(f'Command not Allowed: {cmd}')
-    for rep in FLAGS.allowed_commands:
-      if rep == '':
-        continue
-      reg = re.compile(rep)
-      if reg.match(cmd):
-        return
-    raise NotAllowedError(f'Command not Allowed: {cmd}')
-  
   def validate_auth(self):
     if not FLAGS.disable_auth:
       authtoken = self.headers.get('Authorization', None)
@@ -145,6 +149,7 @@ class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
           break
         time.sleep(5)
     threading.Thread(target=checker).start()
+
 
 def stream_stdin(src, dest, cancelled: threading.Event):
   def wrap():
@@ -227,17 +232,6 @@ def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
       time.sleep(0.5)
   threading.Thread(target=checker).start()
 
-def close_fds_on_completion(process, *fds):
-  def closer():
-    if process:
-      process.wait()
-    for fd in fds:
-      try:
-        os.close(fd)
-      except Exception:
-        pass
-  threading.Thread(target=closer).start()
-
 def process_killer(process):
     def wrap():
       if process.returncode is None:
@@ -311,6 +305,8 @@ def init_authorized_keys():
       raise KeyTypeNotSupported('Key type not supported')
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
+
+
 
 
 class NotAllowedError(Exception):
