@@ -267,9 +267,9 @@ def process_http_request(ws: websockets.ServerConnection, request: websockets.Re
     authtoken = request.headers.get('Authorization', None)
     if authtoken:
       if not validate_token(authtoken):
-        return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', headers, stderr_line('Invalid auth token'))
+        return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', headers, stderr_line('Invalid auth token\n'))
     else:
-      return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', headers, stderr_line('Auth token not provided'))
+      return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', headers, stderr_line('Auth token not provided\n'))
 
 class NotAllowedError(Exception):
   pass
