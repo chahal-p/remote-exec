@@ -47,8 +47,11 @@ def stream_stdin(ws: websockets.ClientConnection):
   def wrap():
     try:
       if not sys.stdin.isatty():
-        for line in sys.stdin:
-          b = line.encode()
+        while True:
+          data = sys.stdin.read(1024)
+          b = data.encode()
+          if not b:
+            break
           ws.send(f'{len(b):x}\r\n'.encode() + b)
       ws.send(b'0\r\n')
     except websockets.ConnectionClosed:
