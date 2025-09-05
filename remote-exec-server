@@ -130,10 +130,11 @@ def returncode_line(code: int) -> bytes:
 
 def read_from_pipe(pipe, queue: Queue, type: str, done: threading.Event, cancelled: threading.Event):
   with pipe:
-    for line in iter(pipe.readline, b''):
-      if cancelled.is_set():
+    while not cancelled.is_set():
+      data = pipe.read(1024)
+      if not data:
         break
-      queue.put(output_line(type, line))
+      queue.put(output_line(type, data))
   done.set()
 
 def hexstr(data: str|bytes|int):
