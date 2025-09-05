@@ -12,6 +12,7 @@ import base64
 import logging
 import sys
 import threading
+import traceback
 import websockets
 
 FLAGS = None
@@ -55,20 +56,24 @@ def stream_stdin(ws: websockets.ClientConnection):
   threading.Thread(target=wrap, daemon=True).start()
 
 def output_reader(ws: websockets.ClientConnection):
-  global exit_code
   while True:
     line = None
     try:
       line = ws.recv()
     except websockets.exceptions.ConnectionClosed:
       return
-    line = line.decode()
-    if line.startswith('STDOUT:'):
-      sys.stdout.write(bytes.fromhex(line[7:]).decode())
-    elif line.startswith('STDERR:'):
-      sys.stderr.write(bytes.fromhex(line[7:]).decode())
-    elif line.startswith('CODE:'):
-      exit_code = int(bytes.fromhex(line[5:]).decode())
+    write_output(line)
+
+def write_output(data: bytes):
+  data = data.decode()
+  global exit_code
+  if data.startswith('STDOUT:'):
+    sys.stdout.write(bytes.fromhex(data[7:]).decode())
+  elif data.startswith('STDERR:'):
+    sys.stderr.write(bytes.fromhex(data[7:]).decode())
+  elif data.startswith('CODE:'):
+    exit_code = int(bytes.fromhex(data[5:]).decode())
+
 
 def get_auth_token(pk_file) -> str:
   private_key: PrivateKeyTypes = None
@@ -132,6 +137,10 @@ if __name__ == "__main__":
     exec(cmd_args)
   except KeyboardInterrupt:
     pass
-  except Exception:
-    pass
+  except websockets.exceptions.InvalidStatus as e:
+    if e.response.status_code != 401:
+      raise e
+    write_output(e.response.body)
+  except Exception as e:
+    traceback.print_exception(e)
   sys.exit(exit_code)
