@@ -44,7 +44,7 @@ class CommandHandler():
       yield stderr_line('{}\n'.format(str(e))), 1
     if not process:
       return
-    on_cancellation(cancelled, process_killer(process))
+    on_cancellation(cancelled, self.process_killer(process))
     for l in output_reader(process.stdout, process.stderr, cancelled):
       yield l, None
     for _ in range(10):
@@ -66,6 +66,14 @@ class CommandHandler():
         return
     raise NotAllowedError(f'Command not Allowed: {cmd}')
   
+  def process_killer(self, process):
+    def wrap():
+      if process.returncode is None:
+        process.kill()
+        print(f'Process {process.pid} killed!')
+    return wrap
+
+
 class HTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
   cmd_handler = CommandHandler()
@@ -232,13 +240,6 @@ def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
       time.sleep(0.5)
   threading.Thread(target=checker).start()
 
-def process_killer(process):
-    def wrap():
-      if process.returncode is None:
-        process.kill()
-        print(f'Process {process.pid} killed!')
-    return wrap
-
 def validate_token(token: str):
   if not token:
     return False
@@ -305,8 +306,6 @@ def init_authorized_keys():
       raise KeyTypeNotSupported('Key type not supported')
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
-
-
 
 
 class NotAllowedError(Exception):
