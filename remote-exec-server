@@ -11,7 +11,6 @@ from websockets.sync.server import serve
 
 import argparse
 import base64
-import http.server
 import os
 import re
 import subprocess
@@ -131,7 +130,7 @@ def returncode_line(code: int) -> bytes:
 def read_from_pipe(pipe, queue: Queue, type: str, done: threading.Event, cancelled: threading.Event):
   with pipe:
     while not cancelled.is_set():
-      data = pipe.read(1024)
+      data = pipe.readline(8192)
       if not data:
         break
       queue.put(output_line(type, data))
