@@ -105,8 +105,8 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
   queue = Queue()
   done_stdout = threading.Event()
   done_stderr = threading.Event()
-  t1 = threading.Thread(target=read_from_pipe, args=[stdout, queue, 'STDOUT', done_stdout, cancelled])
-  t2 = threading.Thread(target=read_from_pipe, args=[stderr, queue, 'STDERR', done_stderr, cancelled])
+  t1 = threading.Thread(target=read_from_pipe, daemon=True, args=[stdout, queue, 'STDOUT', done_stdout, cancelled])
+  t2 = threading.Thread(target=read_from_pipe, daemon=True, args=[stderr, queue, 'STDERR', done_stderr, cancelled])
   t1.start()
   t2.start()
   while not queue.empty() or not done_stdout.is_set() or not done_stderr.is_set():
@@ -148,7 +148,7 @@ def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
         callback(*args, **kwargs)
         return
       time.sleep(0.5)
-  threading.Thread(target=checker).start()
+  threading.Thread(target=checker, daemon=True).start()
 
 def validate_token(token: str):
   if not token:
