@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from datetime import datetime, timezone
+from http import HTTPStatus
 from websockets.sync.client import connect
 
 import argparse
@@ -140,7 +141,7 @@ if __name__ == "__main__":
   except KeyboardInterrupt:
     pass
   except websockets.exceptions.InvalidStatus as e:
-    if e.response.status_code != 401:
+    if e.response.status_code not in [HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN]:
       raise e
     write_output(e.response.body)
   except Exception as e:
