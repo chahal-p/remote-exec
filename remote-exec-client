@@ -5,11 +5,14 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from datetime import datetime, timezone
+from websockets.sync.client import connect
 
 import argparse
 import base64
-import http.client
+import logging
 import sys
+import threading
+import websockets
 
 FLAGS = None
 
@@ -24,45 +27,48 @@ SUPPORTED_KEY_TYPES = [
 ]
 
 def exec(cmd_args: list[str]) -> int:
-  returncode = 1
+  encoded_cmd = []
+  for arg in cmd_args:
+    encoded_cmd.append(bytes.hex(arg.encode()))
+
   headers = {}
   if FLAGS.private_key:
     auth_token = get_auth_token(FLAGS.private_key)
     headers['Authorization'] = auth_token
   if FLAGS.cwd:
     headers['CWD'] = FLAGS.cwd
-  encoded_cmd = []
-  for arg in cmd_args:
-    encoded_cmd.append(bytes.hex(arg.encode()))
-  try:
-    conn = http.client.HTTPConnection('localhost', FLAGS.port)
-    headers['Transfer-Encoding'] = 'chunked'
-    headers['Content-Type'] = 'application/octet-stream'
-    conn.request('POST', '/', headers=headers, encode_chunked=True)
-    stream_body(conn, ':'.join(encoded_cmd))
-    res = conn.getresponse()
-    if res.status != http.client.OK:
-      sys.stderr.write(res.reason)
+  with connect(f'ws://localhost:{FLAGS.port}', additional_headers=headers) as ws:
+    ws.send(':'.join(encoded_cmd).encode())
+    stream_stdin(ws)
+    output_reader(ws)
+
+def stream_stdin(ws: websockets.ClientConnection):
+  def wrap():
+    try:
+      if not sys.stdin.isatty():
+        for line in sys.stdin:
+          b = line.encode()
+          ws.send(f'{len(b):x}\r\n'.encode() + b)
+      ws.send(b'0\r\n')
+    except websockets.ConnectionClosed:
+      pass
+  threading.Thread(target=wrap, daemon=True).start()
+
+def output_reader(ws: websockets.ClientConnection):
+  global exit_code
+  while True:
+    line = None
+    try:
+      line = ws.recv()
+    except websockets.exceptions.ConnectionClosed:
       return
-    for line in res:
-      line = line.decode()
-      if line.startswith('STDOUT:'):
-        sys.stdout.write(bytes.fromhex(line[7:]).decode())
-      elif line.startswith('STDERR:'):
-        sys.stderr.write(bytes.fromhex(line[7:]).decode())
-      elif line.startswith('CODE:'):
-        returncode = int(bytes.fromhex(line[5:]).decode())
-  except ConnectionResetError:
-    print(f"Connection reset by peer at port {FLAGS.port}")
-    returncode = 1
-  except ConnectionRefusedError:
-    print(f"Connection refused at port {FLAGS.port}")
-    returncode = 1
-  except KeyboardInterrupt:
-    returncode = 1
-  finally:
-    conn.close()
-  return returncode
+    line = line.decode()
+    if line.startswith('STDOUT:'):
+      sys.stdout.write(bytes.fromhex(line[7:]).decode())
+    elif line.startswith('STDERR:'):
+      sys.stderr.write(bytes.fromhex(line[7:]).decode())
+    elif line.startswith('CODE:'):
+      exit_code = int(bytes.fromhex(line[5:]).decode())
 
 def get_auth_token(pk_file) -> str:
   private_key: PrivateKeyTypes = None
@@ -99,19 +105,7 @@ def get_auth_token(pk_file) -> str:
     sig = private_key.sign(data=data_bytes, algorithm=hashes.SHA256())
   return '.'.join((base64.b64encode(data_bytes).decode(), base64.b64encode(sig).decode()))
 
-def encode_http_chunk(data: bytes):
-  return f'{len(data):x}\r\n'.encode() + data + b'\r\n'
-
-def stream_body(conn: http.client.HTTPConnection, cmd: str):
-  def input_reader():
-    yield encode_http_chunk(cmd.encode())
-    if not sys.stdin.isatty():
-      for line in sys.stdin:
-        yield encode_http_chunk(line.encode())
-    yield b'0\r\n\r\n'
-  for chunk in input_reader():
-    conn.send(chunk)
-
+exit_code = 1
 if __name__ == "__main__":
   all_args = sys.argv[1:]
   parser = argparse.ArgumentParser(description="Remote exec client sends command to remote server.")
@@ -130,5 +124,14 @@ if __name__ == "__main__":
   cmd_args = all_args[split_idx+1:]
   FLAGS = parser.parse_args(internal_args)
   if FLAGS.debug:
-    http.client.HTTPConnection.debuglevel = 1
-  sys.exit(exec(cmd_args))
+    logging.basicConfig(
+        format="%(asctime)s %(message)s",
+        level=logging.DEBUG,
+    )
+  try:
+    exec(cmd_args)
+  except KeyboardInterrupt:
+    pass
+  except Exception:
+    pass
+  sys.exit(exit_code)
