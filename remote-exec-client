@@ -28,6 +28,11 @@ SUPPORTED_KEY_TYPES = [
   ed448.Ed448PrivateKey,
 ]
 
+class OutputType:
+  STDOUT = 1
+  STDERR = 2
+  CODE   = 3
+
 def exec(cmd_args: list[str]) -> int:
   encoded_cmd = []
   for arg in cmd_args:
@@ -70,12 +75,12 @@ def output_reader(ws: websockets.ClientConnection):
 def write_output(data: bytes):
   data = data.decode()
   global exit_code
-  if data.startswith('STDOUT:'):
-    sys.stdout.write(bytes.fromhex(data[7:]).decode())
-  elif data.startswith('STDERR:'):
-    sys.stderr.write(bytes.fromhex(data[7:]).decode())
-  elif data.startswith('CODE:'):
-    exit_code = int(bytes.fromhex(data[5:]).decode())
+  if data.startswith(f'{OutputType.STDOUT}:'):
+    sys.stdout.write(bytes.fromhex(data[2:]).decode())
+  elif data.startswith(f'{OutputType.STDERR}:'):
+    sys.stderr.write(bytes.fromhex(data[2:]).decode())
+  elif data.startswith(f'{OutputType.CODE}:'):
+    exit_code = int(bytes.fromhex(data[2:]).decode())
 
 
 def get_auth_token(pk_file) -> str:
