@@ -34,6 +34,12 @@ SUPPORTED_KEY_TYPES = [
   ed448.Ed448PublicKey,
 ]
 
+class OutputType:
+  STDOUT = 1
+  STDERR = 2
+  CODE   = 3
+
+
 class CommandHandler():
 
   def exec(self, cmd: list, cwd:str, stdin, cancelled: threading.Event):
@@ -106,8 +112,8 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
   queue = Queue()
   done_stdout = threading.Event()
   done_stderr = threading.Event()
-  t1 = threading.Thread(target=read_from_pipe, daemon=True, args=[stdout, queue, 'STDOUT', done_stdout, cancelled])
-  t2 = threading.Thread(target=read_from_pipe, daemon=True, args=[stderr, queue, 'STDERR', done_stderr, cancelled])
+  t1 = threading.Thread(target=read_from_pipe, daemon=True, args=[stdout, queue, OutputType.STDOUT, done_stdout, cancelled])
+  t2 = threading.Thread(target=read_from_pipe, daemon=True, args=[stderr, queue, OutputType.STDERR, done_stderr, cancelled])
   t1.start()
   t2.start()
   while not queue.empty() or not done_stdout.is_set() or not done_stderr.is_set():
@@ -116,19 +122,19 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
     except EmptyQueueError:
       pass
 
-def output_line(type: str, line: str|bytes|int) -> bytes:
+def output_line(type: OutputType, line: str|bytes|int) -> bytes:
   return '{}:{}'.format(type, hexstr(line)).encode('utf-8')
 
 def stdout_line(line: str|bytes) -> bytes:
-  return output_line('STDOUT', line)
+  return output_line(OutputType.STDOUT, line)
 
 def stderr_line(line: str|bytes) -> bytes:
-  return output_line('STDERR', line)
+  return output_line(OutputType.STDERR, line)
 
 def returncode_line(code: int) -> bytes:
-  return output_line('CODE', code)
+  return output_line(OutputType.CODE, code)
 
-def read_from_pipe(pipe, queue: Queue, type: str, done: threading.Event, cancelled: threading.Event):
+def read_from_pipe(pipe, queue: Queue, type: OutputType, done: threading.Event, cancelled: threading.Event):
   with pipe:
     while not cancelled.is_set():
       data = pipe.readline(8192)
