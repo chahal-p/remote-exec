@@ -149,6 +149,8 @@ if __name__ == "__main__":
     if e.response.status_code not in [HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN]:
       raise e
     write_output(e.response.body)
+  except ConnectionRefusedError:
+    sys.stderr.write(f'Connection refused at port {FLAGS.port}.\n')
   except Exception as e:
     traceback.print_exception(e)
   sys.exit(exit_code)
