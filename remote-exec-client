@@ -36,7 +36,7 @@ class OutputType:
 def exec(cmd_args: list[str]) -> int:
   encoded_cmd = []
   for arg in cmd_args:
-    encoded_cmd.append(bytes.hex(arg.encode()))
+    encoded_cmd.append(base64.b64encode(arg.encode()).decode())
 
   headers = {}
   if FLAGS.private_key:

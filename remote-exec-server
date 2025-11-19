@@ -239,10 +239,10 @@ def websocket_handler(ws: websockets.ServerConnection):
   cancelled = threading.Event()
   cancel_on_connection_closed(ws, cancelled)
   cwd = ws.request.headers.get('CWD', None)
-  hex_cmd = ws.recv()
+  encoded_cmd: bytes = ws.recv()
   cmd = []
-  for arg in hex_cmd.decode().split(':'):
-    cmd.append(bytes.fromhex(arg).decode('utf-8'))
+  for arg in encoded_cmd.decode().split(':'):
+    cmd.append(base64.b64decode(arg).decode())
   stdin_read_fd, stdin_write_fd = os.pipe()
   try:
     stream_stdin(ws, stdin_write_fd, cancelled)
