@@ -76,9 +76,9 @@ def write_output(data: bytes):
   data = data.decode()
   global exit_code
   if data.startswith(f'{OutputType.STDOUT}:'):
-    sys.stdout.write(bytes.fromhex(data[2:]).decode())
+    sys.stdout.buffer.write(bytes.fromhex(data[2:]))
   elif data.startswith(f'{OutputType.STDERR}:'):
-    sys.stderr.write(bytes.fromhex(data[2:]).decode())
+    sys.stderr.buffer.write(bytes.fromhex(data[2:]))
   elif data.startswith(f'{OutputType.CODE}:'):
     exit_code = int(bytes.fromhex(data[2:]).decode())
 
