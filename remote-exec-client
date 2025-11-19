@@ -54,7 +54,7 @@ def stream_stdin(ws: websockets.ClientConnection):
     try:
       if not sys.stdin.isatty():
         while True:
-          data = sys.stdin.readline(8192).encode()
+          data = sys.stdin.buffer.read(8192)
           if not data:
             break
           ws.send(f'{len(data):x}\r\n'.encode() + data)

@@ -137,7 +137,7 @@ def returncode_line(code: int) -> bytes:
 def read_from_pipe(pipe, queue: Queue, type: OutputType, done: threading.Event, cancelled: threading.Event):
   with pipe:
     while not cancelled.is_set():
-      data = pipe.readline(8192)
+      data = pipe.read(8192)
       if not data:
         break
       queue.put(output_line(type, data))
