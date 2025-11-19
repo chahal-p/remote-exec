@@ -88,27 +88,16 @@ def stream_stdin(ws: websockets.ServerConnection, dest, cancelled: threading.Eve
   def target():
     try:
       while not cancelled.is_set():
-        data = extract_data(ws.recv())
-        if data is None:
+        data = ws.recv()
+        if data:
+          os.write(dest, data)
+        else:
           break
-        os.write(dest, data)
     except websockets.exceptions.ConnectionClosed:
       cancelled.set()
     finally:
       os.close(dest)
   threading.Thread(target=target, daemon=True).start()
-
-def extract_data(bd: bytes):
-  idx = bd.find(b'\r\n')
-  if idx == -1:
-    raise NotAbleToParseBody()
-  size = int(bd[:idx], base=16)
-  if size == 0:
-    return None
-  data = bd[idx+2:]
-  if len(data) != size:
-    raise NotAbleToParseBody()
-  return data
 
 def output_reader(stdout, stderr, cancelled: threading.Event):
   queue = Queue()

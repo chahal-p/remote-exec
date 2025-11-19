@@ -59,8 +59,8 @@ def stream_stdin(ws: websockets.ClientConnection):
           data = sys.stdin.buffer.read(MESSAGE_SIZE)
           if not data:
             break
-          ws.send(f'{len(data):x}\r\n'.encode() + data)
-      ws.send(b'0\r\n')
+          ws.send(data)
+      ws.send(b'')
     except websockets.ConnectionClosed:
       pass
   threading.Thread(target=wrap, daemon=True).start()
