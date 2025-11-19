@@ -20,6 +20,8 @@ FLAGS = None
 
 DEFAULT_PORT = 5567
 
+MESSAGE_SIZE = 1
+
 SUPPORTED_KEY_TYPES = [
   dsa.DSAPrivateKey,
   rsa.RSAPrivateKey,
@@ -54,7 +56,7 @@ def stream_stdin(ws: websockets.ClientConnection):
     try:
       if not sys.stdin.isatty():
         while True:
-          data = sys.stdin.buffer.read(8192)
+          data = sys.stdin.buffer.read(MESSAGE_SIZE)
           if not data:
             break
           ws.send(f'{len(data):x}\r\n'.encode() + data)
@@ -65,23 +67,26 @@ def stream_stdin(ws: websockets.ClientConnection):
 
 def output_reader(ws: websockets.ClientConnection):
   while True:
-    line = None
+    data = None
     try:
-      line = ws.recv()
+      data = ws.recv()
     except websockets.exceptions.ConnectionClosed:
       return
-    write_output(line)
+    write_output(data)
 
 def write_output(data: bytes):
-  data = data.decode()
+  type, data = data[0], data[1:]
   global exit_code
-  if data.startswith(f'{OutputType.STDOUT}:'):
-    sys.stdout.buffer.write(bytes.fromhex(data[2:]))
-  elif data.startswith(f'{OutputType.STDERR}:'):
-    sys.stderr.buffer.write(bytes.fromhex(data[2:]))
-  elif data.startswith(f'{OutputType.CODE}:'):
-    exit_code = int(bytes.fromhex(data[2:]).decode())
-
+  if type == OutputType.STDOUT:
+    sys.stdout.buffer.write(data)
+    sys.stdout.flush()
+  elif type == OutputType.STDERR:
+    sys.stderr.buffer.write(data)
+    sys.stderr.flush()
+  elif type == OutputType.CODE:
+    exit_code = int.from_bytes(data)
+  else:
+    raise TypeError('Unknown output type')
 
 def get_auth_token(pk_file) -> str:
   private_key: PrivateKeyTypes = None

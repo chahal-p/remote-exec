@@ -34,6 +34,8 @@ SUPPORTED_KEY_TYPES = [
   ed448.Ed448PublicKey,
 ]
 
+MESSAGE_SIZE = 1
+
 class OutputType:
   STDOUT = 1
   STDERR = 2
@@ -50,7 +52,7 @@ class CommandHandler():
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
-      yield stderr_line('{}\n'.format(str(e))), 1
+      yield format_stderr('{}\n'.format(str(e))), 1
     if not process:
       return
     on_cancellation(cancelled, self.process_killer(process))
@@ -122,25 +124,29 @@ def output_reader(stdout, stderr, cancelled: threading.Event):
     except EmptyQueueError:
       pass
 
-def output_line(type: OutputType, line: str|bytes|int) -> bytes:
-  return '{}:{}'.format(type, hexstr(line)).encode('utf-8')
+def format_output(type: OutputType, data: bytes|str|int) -> bytes:
+  if isinstance(data, bytes):
+    return int.to_bytes(type) + data
+  elif isinstance(data, str):
+    return int.to_bytes(type) + str.encode(data)
+  if isinstance(data, int):
+    return int.to_bytes(type) + int.to_bytes(data)
+  else:
+    raise TypeError('Unsupported type')
 
-def stdout_line(line: str|bytes) -> bytes:
-  return output_line(OutputType.STDOUT, line)
+def format_stderr(data: bytes|str|int) -> bytes:
+  return format_output(OutputType.STDERR, data)
 
-def stderr_line(line: str|bytes) -> bytes:
-  return output_line(OutputType.STDERR, line)
-
-def returncode_line(code: int) -> bytes:
-  return output_line(OutputType.CODE, code)
+def format_returncode(code: int) -> bytes:
+  return format_output(OutputType.CODE, code)
 
 def read_from_pipe(pipe, queue: Queue, type: OutputType, done: threading.Event, cancelled: threading.Event):
   with pipe:
     while not cancelled.is_set():
-      data = pipe.read(8192)
+      data = pipe.read(MESSAGE_SIZE)
       if not data:
         break
-      queue.put(output_line(type, data))
+      queue.put(format_output(type, data))
   done.set()
 
 def hexstr(data: str|bytes|int):
@@ -251,17 +257,17 @@ def websocket_handler(ws: websockets.ServerConnection):
       if line is not None:
         ws.send(line)
       if code is not None:
-        ws.send(returncode_line(code))
+        ws.send(format_returncode(code))
   except NotAllowedError as e:
     cancelled.set()
     traceback.print_exception(e)
-    ws.send(stderr_line('{}\n'.format(str(e))))
-    ws.send(returncode_line(1))
+    ws.send(format_stderr('{}\n'.format(str(e))))
+    ws.send(format_returncode(1))
   except Exception as e:
     cancelled.set()
     traceback.print_exception(e)
-    ws.send(stderr_line('Internal Server Error\n'))
-    ws.send(returncode_line(1))
+    ws.send(format_stderr('Internal Server Error\n'))
+    ws.send(format_returncode(1))
   finally:
     os.close(stdin_read_fd)
     cancelled.set()
@@ -274,12 +280,12 @@ def process_http_request(ws: websockets.ServerConnection, request: websockets.Re
     authtoken = request.headers.get('Authorization', None)
     if authtoken:
       if not validate_token(authtoken):
-        return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', resp_headers, stderr_line('Invalid auth token\n'))
+        return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', resp_headers, format_stderr('Invalid auth token\n'))
     else:
-      return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', resp_headers, stderr_line('Auth token not provided\n'))
+      return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', resp_headers, format_stderr('Auth token not provided\n'))
     remote_addr, _ = ws.remote_address
     if remote_addr != '127.0.0.1':
-      return websockets.Response(HTTPStatus.FORBIDDEN, 'FORBIDDEN', resp_headers, stderr_line('Not allowed\n'))
+      return websockets.Response(HTTPStatus.FORBIDDEN, 'FORBIDDEN', resp_headers, format_stderr('Not allowed\n'))
 
 class NotAllowedError(Exception):
   pass
