@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import typing
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
@@ -34,7 +35,7 @@ SUPPORTED_KEY_TYPES = [
   ed448.Ed448PublicKey,
 ]
 
-MESSAGE_SIZE = 1
+MAX_MESSAGE_SIZE = 8192
 
 class OutputType:
   STDOUT = 1
@@ -99,7 +100,7 @@ def stream_stdin(ws: websockets.ServerConnection, dest, cancelled: threading.Eve
       os.close(dest)
   threading.Thread(target=target, daemon=True).start()
 
-def output_reader(stdout, stderr, cancelled: threading.Event):
+def output_reader(stdout: typing.IO[bytes], stderr, cancelled: threading.Event):
   queue = Queue()
   done_stdout = threading.Event()
   done_stderr = threading.Event()
@@ -129,10 +130,10 @@ def format_stderr(data: bytes|str|int) -> bytes:
 def format_returncode(code: int) -> bytes:
   return format_output(OutputType.CODE, code)
 
-def read_from_pipe(pipe, queue: Queue, type: OutputType, done: threading.Event, cancelled: threading.Event):
+def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done: threading.Event, cancelled: threading.Event):
   with pipe:
     while not cancelled.is_set():
-      data = pipe.read(MESSAGE_SIZE)
+      data = os.read(pipe.fileno(), MAX_MESSAGE_SIZE)
       if not data:
         break
       queue.put(format_output(type, data))
