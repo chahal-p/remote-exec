@@ -35,7 +35,7 @@ SUPPORTED_KEY_TYPES = [
   ed448.Ed448PublicKey,
 ]
 
-MAX_MESSAGE_SIZE = 1048576
+MAX_MESSAGE_SIZE = 1024 * 512
 
 class OutputType:
   STDOUT = 1
