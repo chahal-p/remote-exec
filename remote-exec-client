@@ -21,6 +21,8 @@ FLAGS = None
 
 DEFAULT_PORT = 5567
 
+AUTH_TOKEN_EXPIRY = 3 #seconds
+
 MAX_MESSAGE_SIZE = 1024 * 512
 
 SUPPORTED_KEY_TYPES = [
@@ -109,8 +111,8 @@ def get_auth_token(pk_file) -> str:
       break
     except Exception:
       pass
-  now_timestamp = datetime.now(tz=timezone.utc).timestamp()
-  data_bytes = str(now_timestamp).encode()
+  expiry_timestamp = datetime.now(tz=timezone.utc).timestamp() + AUTH_TOKEN_EXPIRY
+  data_bytes = str(expiry_timestamp).encode()
   sig = None
   if isinstance(private_key, ec.EllipticCurvePrivateKey):
     sig = private_key.sign(data=data_bytes, signature_algorithm=ec.ECDSA(hashes.SHA256()))

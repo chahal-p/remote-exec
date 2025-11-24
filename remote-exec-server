@@ -139,11 +139,6 @@ def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done:
       queue.put(format_output(type, data))
   done.set()
 
-def hexstr(data: str|bytes|int):
-  if isinstance(data, bytes):
-    return bytes.hex(data)
-  return bytes.hex(str(data).encode())
-
 def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
   def checker():
     while True:
@@ -157,16 +152,14 @@ def validate_token(token: str):
   if not token:
     return False
   now = datetime.now(timezone.utc)
-  mintime = now - timedelta(seconds=3)
-  maxtime = now + timedelta(seconds=1)
   parts = token.split('.')
   if len(parts) != 2:
     return False
   data_bytes, sig_bytes = base64.b64decode(parts[0]), base64.b64decode(parts[1])
   if not verify_sig(sig_bytes, data_bytes):
     return False
-  token_timestamp = datetime.fromtimestamp(float(data_bytes.decode()), timezone.utc)
-  if token_timestamp > mintime and token_timestamp < maxtime:
+  token_expiry = datetime.fromtimestamp(float(data_bytes.decode()), timezone.utc)
+  if token_expiry >= now:
     return True
   return False
 
