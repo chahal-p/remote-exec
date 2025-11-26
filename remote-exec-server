@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
+import json
 import typing
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
-from datetime import datetime, timedelta, timezone
-from http import HTTPStatus
+from datetime import datetime, timezone
 from queue import Queue, Empty as EmptyQueueError
 from websockets.sync.server import serve
 
@@ -227,10 +227,19 @@ def cancel_on_connection_closed(ws: websockets.ServerConnection, cancelled: thre
 def websocket_handler(ws: websockets.ServerConnection):
   cancelled = threading.Event()
   cancel_on_connection_closed(ws, cancelled)
-  cwd = ws.request.headers.get('CWD', None)
-  encoded_cmd: bytes = ws.recv()
+  data = ws.recv()
+  req_len, request_bytes = data[:4], data[4:]
+  request: dict = json.loads(request_bytes.decode())
+  client_ip, _ = ws.remote_address
+  err = validate_request(request, client_ip)
+  if err:
+    ws.send(err)
+    ws.send(format_returncode(1))
+    return
+  cwd = request.get('CWD', None)
+  encoded_cmd = request.get('CMD')
   cmd = []
-  for arg in encoded_cmd.decode().split(':'):
+  for arg in encoded_cmd.split(':'):
     cmd.append(base64.b64decode(arg).decode())
   stdin_read_fd, stdin_write_fd = os.pipe()
   try:
@@ -256,19 +265,26 @@ def websocket_handler(ws: websockets.ServerConnection):
     cancelled.set()
     ws.close()
   
+def validate_request(request: dict, client_ip):
+  client_ip_err = validate_client_ip(client_ip)
+  if client_ip_err:
+    return client_ip_err
+  auth_err = validate_authorization(request)
+  if auth_err:
+    return auth_err
 
-def process_http_request(ws: websockets.ServerConnection, request: websockets.Request):
+def validate_authorization(request: dict):
   if not FLAGS.disable_auth:
-    resp_headers = websockets.Headers()
-    authtoken = request.headers.get('Authorization', None)
+    authtoken = request.get('Authorization', None)
     if authtoken:
       if not validate_token(authtoken):
-        return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', resp_headers, format_stderr('Invalid auth token\n'))
+        return format_stderr('Invalid auth token\n')
     else:
-      return websockets.Response(HTTPStatus.UNAUTHORIZED, 'UNAUTHORIZED', resp_headers, format_stderr('Auth token not provided\n'))
-    remote_addr, _ = ws.remote_address
-    if remote_addr != '127.0.0.1':
-      return websockets.Response(HTTPStatus.FORBIDDEN, 'FORBIDDEN', resp_headers, format_stderr('Not allowed\n'))
+      return format_stderr('Auth token not provided\n')
+
+def validate_client_ip(client_ip):
+  if client_ip != '127.0.0.1':
+    return format_stderr('Not allowed\n')
 
 class NotAllowedError(Exception):
   pass
@@ -299,6 +315,6 @@ if __name__ == "__main__":
         format="%(asctime)s %(message)s",
         level=logging.DEBUG,
     )
-  with serve(handler=websocket_handler, process_request=process_http_request, host="localhost", port=FLAGS.port) as server:
+  with serve(handler=websocket_handler, host="localhost", port=FLAGS.port) as server:
     print(f'Listening at {FLAGS.port}')
     server.serve_forever()

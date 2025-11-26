@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
@@ -43,14 +44,16 @@ def exec(cmd_args: list[str]) -> int:
   for arg in cmd_args:
     encoded_cmd.append(base64.b64encode(arg.encode()).decode())
 
-  headers = {}
+  request = {}
   if FLAGS.private_key:
     auth_token = get_auth_token(FLAGS.private_key)
-    headers['Authorization'] = auth_token
+    request['Authorization'] = auth_token
   if FLAGS.cwd:
-    headers['CWD'] = FLAGS.cwd
-  with connect(f'ws://localhost:{FLAGS.port}', additional_headers=headers) as ws:
-    ws.send(':'.join(encoded_cmd).encode())
+    request['CWD'] = FLAGS.cwd
+  request['CMD'] = ':'.join(encoded_cmd)
+  request_bytes = json.dumps(request).encode()
+  with connect(f'ws://localhost:{FLAGS.port}') as ws:
+    ws.send(int.to_bytes(len(request_bytes), length=4) + request_bytes)
     stream_stdin(ws)
     output_reader(ws)
 
