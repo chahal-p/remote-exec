@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 import json
+import socket
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from datetime import datetime, timezone
-from http import HTTPStatus
-from websockets.sync.client import connect
 
 import argparse
 import base64
@@ -16,7 +15,6 @@ import os
 import sys
 import threading
 import traceback
-import websockets
 
 FLAGS = None
 
@@ -35,9 +33,53 @@ SUPPORTED_KEY_TYPES = [
 ]
 
 class OutputType:
+  PING   = 0
   STDOUT = 1
   STDERR = 2
   CODE   = 3
+
+############################################################
+class TCPConnection():
+  LENGTH_PREFIX = 4
+  MAX_DATA_SIZE = 0xffffff
+
+  TYPE_PING     = 0
+  TYPE_PONG     = 1
+  TYPE_DATA     = 2
+
+  _sock: socket.socket
+  def __init__(self, sock: socket.socket):
+    self._sock = sock
+
+  def _recv(self, size):
+    data = self._sock.recv(size)
+    if data:
+      return data
+    raise ConnectionClosed()
+
+  def recv(self):
+    len = int.from_bytes(self._recv(self.LENGTH_PREFIX))
+    if len == 0:
+      return b''
+    return self._sock.recv(len) 
+  
+  def send(self, data: bytes):
+    le = len(data)
+    if le > self.MAX_DATA_SIZE:
+      raise ValueError('Max allowed data size %d' % self.MAX_DATA_SIZE)
+    try:
+      self._sock.sendall(int.to_bytes(le, length=self.LENGTH_PREFIX) + data)
+    except (BrokenPipeError, ConnectionResetError, TimeoutError) as e:
+      raise ConnectionClosed(e)
+
+  def remote_address(self):
+    return self._sock.getpeername()
+
+  def close(self):
+    self._sock.close()
+
+class ConnectionClosed(Exception): pass
+############################################################
 
 def exec(cmd_args: list[str]) -> int:
   encoded_cmd = []
@@ -52,12 +94,14 @@ def exec(cmd_args: list[str]) -> int:
     request['CWD'] = FLAGS.cwd
   request['CMD'] = ':'.join(encoded_cmd)
   request_bytes = json.dumps(request).encode()
-  with connect(f'ws://localhost:{FLAGS.port}') as ws:
-    ws.send(int.to_bytes(len(request_bytes), length=4) + request_bytes)
-    stream_stdin(ws)
-    output_reader(ws)
+  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.connect(('127.0.0.1', FLAGS.port))
+    conn = TCPConnection(sock)
+    conn.send(request_bytes)
+    stream_stdin(conn)
+    output_reader(conn)
 
-def stream_stdin(ws: websockets.ClientConnection):
+def stream_stdin(conn: TCPConnection):
   def wrap():
     try:
       if not sys.stdin.isatty():
@@ -65,24 +109,26 @@ def stream_stdin(ws: websockets.ClientConnection):
           data = os.read(sys.stdin.fileno(), MAX_MESSAGE_SIZE)
           if not data:
             break
-          ws.send(data)
-      ws.send(b'')
-    except websockets.ConnectionClosed:
+          conn.send(data)
+      conn.send(b'')
+    except ConnectionClosed:
       pass
   threading.Thread(target=wrap, daemon=True).start()
 
-def output_reader(ws: websockets.ClientConnection):
+def output_reader(conn: TCPConnection):
   while True:
     data = None
     try:
-      data = ws.recv()
-    except websockets.exceptions.ConnectionClosed:
+      data = conn.recv()
+    except ConnectionClosed:
       return
     write_output(data)
 
 def write_output(data: bytes):
   type, data = data[0], data[1:]
   global exit_code
+  if type == OutputType.PING:
+    return
   if type == OutputType.STDOUT:
     sys.stdout.buffer.write(data)
     sys.stdout.flush()
@@ -160,10 +206,6 @@ if __name__ == "__main__":
     exec(cmd_args)
   except KeyboardInterrupt:
     pass
-  except websockets.exceptions.InvalidStatus as e:
-    if e.response.status_code not in [HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN]:
-      raise e
-    write_output(e.response.body)
   except ConnectionRefusedError:
     sys.stderr.write(f'Connection refused at port {FLAGS.port}.\n')
   except Exception as e:
