@@ -51,16 +51,19 @@ class TCPConnection():
   _sock: socket.socket
   def __init__(self, sock: socket.socket):
     self._sock = sock
+    self._send_lock = threading.Lock()
+    self._recv_lock = threading.Lock()
 
   def _recv(self, size):
     with io.BytesIO() as buf:
-      while size > 0:
-        data = self._sock.recv(size, socket.MSG_WAITALL)
-        if data:
-          buf.write(data)
-          size -= len(data)
-        else:
-          raise ConnectionClosed()
+      with self._recv_lock:
+        while size > 0:
+          data = self._sock.recv(size, socket.MSG_WAITALL)
+          if data:
+            buf.write(data)
+            size -= len(data)
+          else:
+            raise ConnectionClosed()
       return buf.getvalue()
 
   def recv(self):
@@ -77,7 +80,8 @@ class TCPConnection():
     if le > self.MAX_DATA_SIZE:
       raise ValueError('Max allowed data size %d' % self.MAX_DATA_SIZE)
     try:
-      self._sock.sendall(int.to_bytes(le, length=self.LENGTH_PREFIX) + data)
+      with self._send_lock:
+        self._sock.sendall(int.to_bytes(le, length=self.LENGTH_PREFIX) + data)
     except (BrokenPipeError, ConnectionResetError, TimeoutError) as e:
       raise ConnectionClosed(e)
 
