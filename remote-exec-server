@@ -12,6 +12,7 @@ from queue import Queue, Empty as EmptyQueueError
 
 import argparse
 import base64
+import io
 import logging
 import os
 import re
@@ -56,16 +57,24 @@ class TCPConnection():
     self._sock = sock
 
   def _recv(self, size):
-    data = self._sock.recv(size)
-    if data:
-      return data
-    raise ConnectionClosed()
+    with io.BytesIO() as buf:
+      while size > 0:
+        data = self._sock.recv(size)
+        if data:
+          buf.write(data)
+          size -= len(data)
+        else:
+          raise ConnectionClosed()
+      return buf.getvalue()
 
   def recv(self):
-    len = int.from_bytes(self._recv(self.LENGTH_PREFIX))
-    if len == 0:
+    le = int.from_bytes(self._recv(self.LENGTH_PREFIX))
+    if le == 0:
       return b''
-    return self._sock.recv(len) 
+    data = self._recv(le)
+    if len(data) != le:
+      raise ValueError('Complete data did not arrive, missing bytes %s' % (le - len(data)))
+    return data
   
   def send(self, data: bytes):
     le = len(data)
