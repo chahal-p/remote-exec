@@ -11,6 +11,7 @@ from websockets.sync.client import connect
 
 import argparse
 import base64
+import io
 import logging
 import os
 import sys
