@@ -269,7 +269,7 @@ def cancel_on_connection_closed(conn: TCPConnection, cancelled: threading.Event)
     while not cancelled.is_set():
       try:
         conn.send(format_output(OutputType.PING, b''))
-        time.sleep(10)
+        time.sleep(1)
       except ConnectionClosed:
         cancelled.set()
         return
