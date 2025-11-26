@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import socket
 import typing
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
@@ -8,7 +9,6 @@ from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed4
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from datetime import datetime, timezone
 from queue import Queue, Empty as EmptyQueueError
-from websockets.sync.server import serve
 
 import argparse
 import base64
@@ -19,7 +19,6 @@ import subprocess
 import threading
 import time
 import traceback
-import websockets
 
 FLAGS=None
 
@@ -38,10 +37,53 @@ SUPPORTED_KEY_TYPES = [
 MAX_MESSAGE_SIZE = 1024 * 512
 
 class OutputType:
+  PING   = 0
   STDOUT = 1
   STDERR = 2
   CODE   = 3
 
+############################################################
+class TCPConnection():
+  LENGTH_PREFIX = 4
+  MAX_DATA_SIZE = 0xffffff
+
+  TYPE_PING     = 0
+  TYPE_PONG     = 1
+  TYPE_DATA     = 2
+
+  _sock: socket.socket
+  def __init__(self, sock: socket.socket):
+    self._sock = sock
+
+  def _recv(self, size):
+    data = self._sock.recv(size)
+    if data:
+      return data
+    raise ConnectionClosed()
+
+  def recv(self):
+    len = int.from_bytes(self._recv(self.LENGTH_PREFIX))
+    if len == 0:
+      return b''
+    return self._sock.recv(len) 
+  
+  def send(self, data: bytes):
+    le = len(data)
+    if le > self.MAX_DATA_SIZE:
+      raise ValueError('Max allowed data size %d' % self.MAX_DATA_SIZE)
+    try:
+      self._sock.sendall(int.to_bytes(le, length=self.LENGTH_PREFIX) + data)
+    except (BrokenPipeError, ConnectionResetError, TimeoutError) as e:
+      raise ConnectionClosed(e)
+
+  def remote_address(self):
+    return self._sock.getpeername()
+
+  def close(self):
+    self._sock.close()
+
+class ConnectionClosed(Exception): pass
+############################################################
 
 class CommandHandler():
 
@@ -85,16 +127,16 @@ class CommandHandler():
         print(f'Process {process.pid} killed!')
     return wrap
 
-def stream_stdin(ws: websockets.ServerConnection, dest, cancelled: threading.Event):
+def stream_stdin(conn: TCPConnection, dest, cancelled: threading.Event):
   def target():
     try:
       while not cancelled.is_set():
-        data = ws.recv()
+        data = conn.recv()
         if data:
           os.write(dest, data)
         else:
           break
-    except websockets.exceptions.ConnectionClosed:
+    except ConnectionClosed:
       cancelled.set()
     finally:
       os.close(dest)
@@ -213,28 +255,27 @@ def init_authorized_keys():
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
 
-def cancel_on_connection_closed(ws: websockets.ServerConnection, cancelled: threading.Event):
+def cancel_on_connection_closed(conn: TCPConnection, cancelled: threading.Event):
   def pinger():
     while not cancelled.is_set():
       try:
-        ws.ping()
-        time.sleep(3)
-      except websockets.ConnectionClosed:
+        conn.send(format_output(OutputType.PING, b''))
+        time.sleep(10)
+      except ConnectionClosed:
         cancelled.set()
         return
   threading.Thread(target=pinger, daemon=True).start()
 
-def websocket_handler(ws: websockets.ServerConnection):
+def request_handler(conn: TCPConnection):
   cancelled = threading.Event()
-  cancel_on_connection_closed(ws, cancelled)
-  data = ws.recv()
-  req_len, request_bytes = data[:4], data[4:]
+  cancel_on_connection_closed(conn, cancelled)
+  request_bytes = conn.recv()
   request: dict = json.loads(request_bytes.decode())
-  client_ip, _ = ws.remote_address
+  client_ip, _ = conn.remote_address()
   err = validate_request(request, client_ip)
   if err:
-    ws.send(err)
-    ws.send(format_returncode(1))
+    conn.send(err)
+    conn.send(format_returncode(1))
     return
   cwd = request.get('CWD', None)
   encoded_cmd = request.get('CMD')
@@ -243,27 +284,27 @@ def websocket_handler(ws: websockets.ServerConnection):
     cmd.append(base64.b64decode(arg).decode())
   stdin_read_fd, stdin_write_fd = os.pipe()
   try:
-    stream_stdin(ws, stdin_write_fd, cancelled)
+    stream_stdin(conn, stdin_write_fd, cancelled)
     cmd_handler = CommandHandler()
     for line, code in cmd_handler.exec(cmd, cwd, stdin_read_fd, cancelled):
       if line is not None:
-        ws.send(line)
+        conn.send(line)
       if code is not None:
-        ws.send(format_returncode(code))
+        conn.send(format_returncode(code))
   except NotAllowedError as e:
     cancelled.set()
     traceback.print_exception(e)
-    ws.send(format_stderr('{}\n'.format(str(e))))
-    ws.send(format_returncode(1))
+    conn.send(format_stderr('{}\n'.format(str(e))))
+    conn.send(format_returncode(1))
   except Exception as e:
     cancelled.set()
     traceback.print_exception(e)
-    ws.send(format_stderr('Internal Server Error\n'))
-    ws.send(format_returncode(1))
+    conn.send(format_stderr('Internal Server Error\n'))
+    conn.send(format_returncode(1))
   finally:
     os.close(stdin_read_fd)
     cancelled.set()
-    ws.close()
+    conn.close()
   
 def validate_request(request: dict, client_ip):
   client_ip_err = validate_client_ip(client_ip)
@@ -295,6 +336,12 @@ class KeyTypeNotSupported(Exception):
 class NotAbleToParseBody(Exception):
   pass
 
+def handle_connection_threaded(conn: socket.socket):
+  def wrap():
+    with conn:
+      request_handler(TCPConnection(conn))
+  t1 = threading.Thread(target=wrap, daemon=True)
+  t1.start()
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
@@ -315,6 +362,12 @@ if __name__ == "__main__":
         format="%(asctime)s %(message)s",
         level=logging.DEBUG,
     )
-  with serve(handler=websocket_handler, host="localhost", port=FLAGS.port) as server:
+
+  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('127.0.0.1', FLAGS.port))
+    s.listen()
     print(f'Listening at {FLAGS.port}')
-    server.serve_forever()
+    while True:
+      conn, _ = s.accept()
+      handle_connection_threaded(conn)
