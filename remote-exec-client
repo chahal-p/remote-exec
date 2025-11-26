@@ -55,7 +55,7 @@ class TCPConnection():
   def _recv(self, size):
     with io.BytesIO() as buf:
       while size > 0:
-        data = self._sock.recv(size)
+        data = self._sock.recv(size, socket.MSG_WAITALL)
         if data:
           buf.write(data)
           size -= len(data)
