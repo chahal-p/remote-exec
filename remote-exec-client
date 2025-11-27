@@ -1,21 +1,77 @@
 #!/usr/bin/env python3
 
-import json
+############################################################
+# Copied from https://github.com/chahal-p/tcp-connection-python/blob/main/tcpconnection.py
+import io
 import socket
+import threading
+
+class TCPConnection():
+  LENGTH_PREFIX = 4
+  MAX_DATA_SIZE = 0xffffff
+
+  _sock: socket.socket
+  def __init__(self, sock: socket.socket):
+    self._sock = sock
+    self._send_lock = threading.Lock()
+    self._recv_lock = threading.Lock()
+
+  def _recv(self, size):
+    with io.BytesIO() as buf:
+      with self._recv_lock:
+        while size > 0:
+          data = self._sock.recv(size, socket.MSG_WAITALL)
+          if data:
+            buf.write(data)
+            size -= len(data)
+          else:
+            raise ConnectionClosedError()
+      return buf.getvalue()
+
+  def recv(self):
+    le = int.from_bytes(self._recv(self.LENGTH_PREFIX))
+    if le == 0:
+      return b''
+    data = self._recv(le)
+    if len(data) != le:
+      raise ValueError('Complete data did not arrive, missing bytes %s' % (le - len(data)))
+    return data
+
+  def send(self, data: bytes):
+    le = len(data)
+    if le > self.MAX_DATA_SIZE:
+      raise ValueError('Max allowed data size %d' % self.MAX_DATA_SIZE)
+    try:
+      with self._send_lock:
+        self._sock.sendall(int.to_bytes(le, length=self.LENGTH_PREFIX) + data)
+    except (BrokenPipeError, ConnectionResetError, TimeoutError) as e:
+      raise ConnectionClosedError(e)
+
+  def remote_address(self):
+    return self._sock.getpeername()
+
+  def close(self):
+    self._sock.close()
+
+class ConnectionClosedError(Exception): pass
+############################################################
+
+import argparse
+import base64
+import io
+import json
+import logging
+import os
+import socket
+import sys
+import threading
+import traceback
+
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from datetime import datetime, timezone
-
-import argparse
-import base64
-import io
-import logging
-import os
-import sys
-import threading
-import traceback
 
 FLAGS = None
 
