@@ -147,7 +147,7 @@ def stream_stdin(conn: TCPConnection, dest, cancelled: threading.Event):
           os.write(dest, data)
         else:
           break
-    except ConnectionClosed:
+    except ConnectionClosedError:
       cancelled.set()
     finally:
       os.close(dest)
@@ -272,7 +272,7 @@ def cancel_on_connection_closed(conn: TCPConnection, cancelled: threading.Event)
       try:
         conn.send(format_output(OutputType.PING, b''))
         time.sleep(1)
-      except ConnectionClosed:
+      except ConnectionClosedError:
         cancelled.set()
         return
   threading.Thread(target=pinger, daemon=True).start()
