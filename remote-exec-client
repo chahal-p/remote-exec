@@ -2,25 +2,25 @@
 
 ############################################################
 # Copied from https://github.com/chahal-p/tcp-connection-python/blob/main/tcpconnection.py
-import io
-import socket
-import threading
+from io import BytesIO as _BytesIO
+from socket import socket as _Socket, MSG_WAITALL as _flag_MSG_WAITALL
+from threading import Lock as _Lock
 
 class TCPConnection():
   LENGTH_PREFIX = 4
   MAX_DATA_SIZE = 0xffffff
 
-  _sock: socket.socket
-  def __init__(self, sock: socket.socket):
+  _sock: _Socket
+  def __init__(self, sock: _Socket):
     self._sock = sock
-    self._send_lock = threading.Lock()
-    self._recv_lock = threading.Lock()
+    self._send_lock = _Lock()
+    self._recv_lock = _Lock()
 
   def _recv(self, size):
-    with io.BytesIO() as buf:
+    with _BytesIO() as buf:
       with self._recv_lock:
         while size > 0:
-          data = self._sock.recv(size, socket.MSG_WAITALL)
+          data = self._sock.recv(size, _flag_MSG_WAITALL)
           if data:
             buf.write(data)
             size -= len(data)
@@ -58,7 +58,6 @@ class ConnectionClosedError(Exception): pass
 
 import argparse
 import base64
-import io
 import json
 import logging
 import os
@@ -95,61 +94,6 @@ class OutputType:
   STDERR = 2
   CODE   = 3
 
-############################################################
-class TCPConnection():
-  LENGTH_PREFIX = 4
-  MAX_DATA_SIZE = 0xffffff
-
-  TYPE_PING     = 0
-  TYPE_PONG     = 1
-  TYPE_DATA     = 2
-
-  _sock: socket.socket
-  def __init__(self, sock: socket.socket):
-    self._sock = sock
-    self._send_lock = threading.Lock()
-    self._recv_lock = threading.Lock()
-
-  def _recv(self, size):
-    with io.BytesIO() as buf:
-      with self._recv_lock:
-        while size > 0:
-          data = self._sock.recv(size, socket.MSG_WAITALL)
-          if data:
-            buf.write(data)
-            size -= len(data)
-          else:
-            raise ConnectionClosed()
-      return buf.getvalue()
-
-  def recv(self):
-    le = int.from_bytes(self._recv(self.LENGTH_PREFIX))
-    if le == 0:
-      return b''
-    data = self._recv(le)
-    if len(data) != le:
-      raise ValueError('Complete data did not arrive, missing bytes %s' % (le - len(data)))
-    return data
-  
-  def send(self, data: bytes):
-    le = len(data)
-    if le > self.MAX_DATA_SIZE:
-      raise ValueError('Max allowed data size %d' % self.MAX_DATA_SIZE)
-    try:
-      with self._send_lock:
-        self._sock.sendall(int.to_bytes(le, length=self.LENGTH_PREFIX) + data)
-    except (BrokenPipeError, ConnectionResetError, TimeoutError) as e:
-      raise ConnectionClosed(e)
-
-  def remote_address(self):
-    return self._sock.getpeername()
-
-  def close(self):
-    self._sock.close()
-
-class ConnectionClosed(Exception): pass
-############################################################
-
 def exec(cmd_args: list[str]) -> int:
   encoded_cmd = []
   for arg in cmd_args:
@@ -180,7 +124,7 @@ def stream_stdin(conn: TCPConnection):
             break
           conn.send(data)
       conn.send(b'')
-    except ConnectionClosed:
+    except ConnectionClosedError:
       pass
   threading.Thread(target=wrap, daemon=True).start()
 
@@ -189,7 +133,7 @@ def output_reader(conn: TCPConnection):
     data = None
     try:
       data = conn.recv()
-    except ConnectionClosed:
+    except ConnectionClosedError:
       return
     write_output(data)
 

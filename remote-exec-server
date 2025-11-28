@@ -2,25 +2,25 @@
 
 ############################################################
 # Copied from https://github.com/chahal-p/tcp-connection-python/blob/main/tcpconnection.py
-import io
-import socket
-import threading
+from io import BytesIO as _BytesIO
+from socket import socket as _Socket, MSG_WAITALL as _flag_MSG_WAITALL
+from threading import Lock as _Lock
 
 class TCPConnection():
   LENGTH_PREFIX = 4
   MAX_DATA_SIZE = 0xffffff
 
-  _sock: socket.socket
-  def __init__(self, sock: socket.socket):
+  _sock: _Socket
+  def __init__(self, sock: _Socket):
     self._sock = sock
-    self._send_lock = threading.Lock()
-    self._recv_lock = threading.Lock()
+    self._send_lock = _Lock()
+    self._recv_lock = _Lock()
 
   def _recv(self, size):
-    with io.BytesIO() as buf:
+    with _BytesIO() as buf:
       with self._recv_lock:
         while size > 0:
-          data = self._sock.recv(size, socket.MSG_WAITALL)
+          data = self._sock.recv(size, _flag_MSG_WAITALL)
           if data:
             buf.write(data)
             size -= len(data)
@@ -36,7 +36,7 @@ class TCPConnection():
     if len(data) != le:
       raise ValueError('Complete data did not arrive, missing bytes %s' % (le - len(data)))
     return data
-  
+
   def send(self, data: bytes):
     le = len(data)
     if le > self.MAX_DATA_SIZE:
@@ -62,6 +62,7 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import time
 import traceback
@@ -73,6 +74,7 @@ from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed4
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from datetime import datetime, timezone
 from queue import Queue, Empty as EmptyQueueError
+from threading import Event, Thread
 
 FLAGS=None
 
@@ -98,7 +100,7 @@ class OutputType:
 
 class CommandHandler():
 
-  def exec(self, cmd: list, cwd:str, stdin, cancelled: threading.Event):
+  def exec(self, cmd: list, cwd:str, stdin, cancelled: Event):
     self.validate_cmd(' '.join(cmd))
     process = None
     try:
@@ -138,7 +140,7 @@ class CommandHandler():
         print(f'Process {process.pid} killed!')
     return wrap
 
-def stream_stdin(conn: TCPConnection, dest, cancelled: threading.Event):
+def stream_stdin(conn: TCPConnection, dest, cancelled: Event):
   def target():
     try:
       while not cancelled.is_set():
@@ -151,14 +153,14 @@ def stream_stdin(conn: TCPConnection, dest, cancelled: threading.Event):
       cancelled.set()
     finally:
       os.close(dest)
-  threading.Thread(target=target, daemon=True).start()
+  Thread(target=target, daemon=True).start()
 
-def output_reader(stdout: typing.IO[bytes], stderr, cancelled: threading.Event):
+def output_reader(stdout: typing.IO[bytes], stderr, cancelled: Event):
   queue = Queue()
-  done_stdout = threading.Event()
-  done_stderr = threading.Event()
-  t1 = threading.Thread(target=read_from_pipe, daemon=True, args=[stdout, queue, OutputType.STDOUT, done_stdout, cancelled])
-  t2 = threading.Thread(target=read_from_pipe, daemon=True, args=[stderr, queue, OutputType.STDERR, done_stderr, cancelled])
+  done_stdout = Event()
+  done_stderr = Event()
+  t1 = Thread(target=read_from_pipe, daemon=True, args=[stdout, queue, OutputType.STDOUT, done_stdout, cancelled])
+  t2 = Thread(target=read_from_pipe, daemon=True, args=[stderr, queue, OutputType.STDERR, done_stderr, cancelled])
   t1.start()
   t2.start()
   while not queue.empty() or not done_stdout.is_set() or not done_stderr.is_set():
@@ -183,7 +185,7 @@ def format_stderr(data: bytes|str|int) -> bytes:
 def format_returncode(code: int) -> bytes:
   return format_output(OutputType.CODE, code)
 
-def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done: threading.Event, cancelled: threading.Event):
+def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done: Event, cancelled: Event):
   with pipe:
     while not cancelled.is_set():
       data = os.read(pipe.fileno(), MAX_MESSAGE_SIZE)
@@ -192,14 +194,14 @@ def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done:
       queue.put(format_output(type, data))
   done.set()
 
-def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
+def on_cancellation(cancelled: Event, callback, *args, **kwargs):
   def checker():
     while True:
       if cancelled.is_set():
         callback(*args, **kwargs)
         return
       time.sleep(0.5)
-  threading.Thread(target=checker, daemon=True).start()
+  Thread(target=checker, daemon=True).start()
 
 def validate_token(token: str):
   if not token:
@@ -266,7 +268,7 @@ def init_authorized_keys():
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
 
-def cancel_on_connection_closed(conn: TCPConnection, cancelled: threading.Event):
+def cancel_on_connection_closed(conn: TCPConnection, cancelled: Event):
   def pinger():
     while not cancelled.is_set():
       try:
@@ -275,10 +277,10 @@ def cancel_on_connection_closed(conn: TCPConnection, cancelled: threading.Event)
       except ConnectionClosedError:
         cancelled.set()
         return
-  threading.Thread(target=pinger, daemon=True).start()
+  Thread(target=pinger, daemon=True).start()
 
 def request_handler(conn: TCPConnection):
-  cancelled = threading.Event()
+  cancelled = Event()
   cancel_on_connection_closed(conn, cancelled)
   request_bytes = conn.recv()
   request: dict = json.loads(request_bytes.decode())
@@ -351,7 +353,7 @@ def handle_connection_threaded(conn: socket.socket):
   def wrap():
     with conn:
       request_handler(TCPConnection(conn))
-  t1 = threading.Thread(target=wrap, daemon=True)
+  t1 = Thread(target=wrap, daemon=True)
   t1.start()
 
 if __name__ == "__main__":
