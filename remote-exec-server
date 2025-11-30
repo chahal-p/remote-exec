@@ -236,38 +236,6 @@ def verify_sig(sig_bytes, data_bytes):
       pass
   return False
 
-def init_authorized_keys():
-  global AUTHORIZED_PUBLIC_KEYS, SUPPORTED_KEY_TYPES
-  public_keys = []
-  for file in FLAGS.authorized_key_file:
-    with open(file, 'rb') as f:
-      content = f.read()
-    loaders = [
-      serialization.load_pem_public_key,
-      serialization.load_der_public_key,
-      serialization.load_ssh_public_key
-    ]
-    for loader in loaders:
-      public_key = None
-      try:
-        public_key = loader(
-          data = content,
-          backend=default_backend()
-        )
-      except Exception:
-        pass
-      if public_key:
-        break
-    supported = False
-    for key_type_cls in SUPPORTED_KEY_TYPES:
-      if isinstance(public_key, key_type_cls):
-        supported = True
-        break
-    if not supported:
-      raise KeyTypeNotSupported('Key type not supported')
-    public_keys.append(public_key)
-  AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
-
 def cancel_on_connection_closed(conn: TCPConnection, cancelled: Event):
   def pinger():
     while not cancelled.is_set():
@@ -355,6 +323,38 @@ def handle_connection_threaded(conn: socket.socket):
       request_handler(TCPConnection(conn))
   t1 = Thread(target=wrap, daemon=True)
   t1.start()
+
+def init_authorized_keys():
+  global AUTHORIZED_PUBLIC_KEYS, SUPPORTED_KEY_TYPES
+  public_keys = []
+  for file in FLAGS.authorized_key_file:
+    with open(file, 'rb') as f:
+      content = f.read()
+    loaders = [
+      serialization.load_pem_public_key,
+      serialization.load_der_public_key,
+      serialization.load_ssh_public_key
+    ]
+    for loader in loaders:
+      public_key = None
+      try:
+        public_key = loader(
+          data = content,
+          backend=default_backend()
+        )
+      except Exception:
+        pass
+      if public_key:
+        break
+    supported = False
+    for key_type_cls in SUPPORTED_KEY_TYPES:
+      if isinstance(public_key, key_type_cls):
+        supported = True
+        break
+    if not supported:
+      raise KeyTypeNotSupported('Key type not supported')
+    public_keys.append(public_key)
+  AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
