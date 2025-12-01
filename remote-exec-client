@@ -117,12 +117,11 @@ def exec(cmd_args: list[str]) -> int:
 def stream_stdin(conn: TCPConnection):
   def wrap():
     try:
-      if not sys.stdin.isatty():
-        while True:
-          data = os.read(sys.stdin.fileno(), MAX_MESSAGE_SIZE)
-          if not data:
-            break
-          conn.send(data)
+      while True:
+        data = os.read(sys.stdin.fileno(), MAX_MESSAGE_SIZE)
+        if not data:
+          break
+        conn.send(data)
       conn.send(b'')
     except ConnectionClosedError:
       pass
