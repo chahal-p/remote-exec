@@ -20,7 +20,13 @@ class TCPConnection():
     with _BytesIO() as buf:
       with self._recv_lock:
         while size > 0:
-          data = self._sock.recv(size, _flag_MSG_WAITALL)
+          try:
+            data = self._sock.recv(size, _flag_MSG_WAITALL)
+          except OSError as e:
+            if e.errno == 9:
+              raise ConnectionClosedError()
+            else:
+              raise
           if data:
             buf.write(data)
             size -= len(data)
