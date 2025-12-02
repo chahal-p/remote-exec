@@ -146,6 +146,8 @@ def output_reader(conn: TCPConnection):
     data = None
     try:
       data = conn.recv()
+      if not data:
+        return
     except ConnectionClosedError:
       return
     write_output(data)

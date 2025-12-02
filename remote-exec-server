@@ -155,11 +155,10 @@ def stream_stdin(conn: TCPConnection, dest, cancelled: Event):
         if data:
           os.write(dest, data)
         else:
+          os.close(dest)
           break
     except ConnectionClosedError:
       cancelled.set()
-    finally:
-      os.close(dest)
   Thread(target=target, daemon=True).start()
 
 def output_reader(stdout: typing.IO[bytes], stderr, cancelled: Event):
@@ -294,8 +293,16 @@ def request_handler(conn: TCPConnection):
     conn.send(format_stderr('Internal Server Error\n'))
     conn.send(format_returncode(1))
   finally:
-    os.close(stdin_read)
+    try:
+      conn.send(b'')
+    except ConnectionClosedError:
+      pass
     cancelled.set()
+    try:
+      os.close(stdin_write)
+    except OSError:
+      pass
+    os.close(stdin_read)
     conn.close()
   
 def validate_request(request: dict, client_ip):
