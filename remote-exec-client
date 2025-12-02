@@ -100,6 +100,7 @@ def exec(cmd_args: list[str]) -> int:
     encoded_cmd.append(base64.b64encode(arg.encode()).decode())
 
   request = {}
+  request['tty'] = sys.stdin.isatty()
   if FLAGS.private_key:
     auth_token = get_auth_token(FLAGS.private_key)
     request['Authorization'] = auth_token
@@ -117,11 +118,18 @@ def exec(cmd_args: list[str]) -> int:
 def stream_stdin(conn: TCPConnection):
   def wrap():
     try:
-      while True:
-        data = os.read(sys.stdin.fileno(), MAX_MESSAGE_SIZE)
-        if not data:
-          break
-        conn.send(data)
+      if not sys.stdin.isatty():
+        while True:
+          data = os.read(sys.stdin.fileno(), MAX_MESSAGE_SIZE)
+          if not data:
+            break
+          conn.send(data)
+      else:
+        while True:
+          data = sys.stdin.readline().encode()
+          if not data:
+            break
+          conn.send(data)
       conn.send(b'')
     except ConnectionClosedError:
       pass
