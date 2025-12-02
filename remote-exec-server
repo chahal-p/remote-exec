@@ -3,6 +3,7 @@
 ############################################################
 # Copied from https://github.com/chahal-p/tcp-connection-python/blob/main/tcpconnection.py
 from io import BytesIO as _BytesIO
+import signal
 from socket import socket as _Socket, MSG_WAITALL as _flag_MSG_WAITALL
 from threading import Lock as _Lock
 
@@ -143,7 +144,7 @@ class CommandHandler():
   def process_killer(self, process):
     def wrap():
       if process.returncode is None:
-        process.kill()
+        os.kill(process.pid, signal.SIGKILL)
         print(f'Process {process.pid} killed!')
     return wrap
 
@@ -159,6 +160,7 @@ def stream_stdin(conn: TCPConnection, dest, cancelled: Event):
           break
     except ConnectionClosedError:
       cancelled.set()
+      os.close(dest)
   Thread(target=target, daemon=True).start()
 
 def output_reader(stdout: typing.IO[bytes], stderr, cancelled: Event):
