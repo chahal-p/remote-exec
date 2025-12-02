@@ -20,7 +20,13 @@ class TCPConnection():
     with _BytesIO() as buf:
       with self._recv_lock:
         while size > 0:
-          data = self._sock.recv(size, _flag_MSG_WAITALL)
+          try:
+            data = self._sock.recv(size, _flag_MSG_WAITALL)
+          except OSError as e:
+            if e.errno == 9:
+              raise ConnectionClosedError()
+            else:
+              raise
           if data:
             buf.write(data)
             size -= len(data)
@@ -62,6 +68,7 @@ import json
 import logging
 import os
 import re
+import pty
 import socket
 import subprocess
 import time
@@ -263,11 +270,15 @@ def request_handler(conn: TCPConnection):
   cmd = []
   for arg in encoded_cmd.split(':'):
     cmd.append(base64.b64decode(arg).decode())
-  stdin_read_fd, stdin_write_fd = os.pipe()
+  stdin_read, stdin_write = None, None
+  if request.get('tty', False):
+    stdin_write, stdin_read = pty.openpty()
+  else:
+    stdin_read, stdin_write = os.pipe()
   try:
-    stream_stdin(conn, stdin_write_fd, cancelled)
+    stream_stdin(conn, stdin_write, cancelled)
     cmd_handler = CommandHandler()
-    for line, code in cmd_handler.exec(cmd, cwd, stdin_read_fd, cancelled):
+    for line, code in cmd_handler.exec(cmd, cwd, stdin_read, cancelled):
       if line is not None:
         conn.send(line)
       if code is not None:
@@ -283,7 +294,7 @@ def request_handler(conn: TCPConnection):
     conn.send(format_stderr('Internal Server Error\n'))
     conn.send(format_returncode(1))
   finally:
-    os.close(stdin_read_fd)
+    os.close(stdin_read)
     cancelled.set()
     conn.close()
   
