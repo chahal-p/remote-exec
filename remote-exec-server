@@ -108,18 +108,18 @@ class OutputType:
 
 class CommandHandler():
 
-  def exec(self, cmd: list, cwd:str, stdin, cancelled: Event):
+  def exec(self, cmd: list, cwd:str, stdin_read, stdin_write, cancelled: Event):
     self.validate_cmd(' '.join(cmd))
     process = None
     try:
-      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin)
+      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin_read)
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
       yield format_stderr('{}\n'.format(str(e))), 1
     if not process:
       return
-    on_cancellation(cancelled, self.process_killer(process))
+    on_cancellation(cancelled, self.process_killer(process, stdin_read, stdin_write))
     for l in output_reader(process.stdout, process.stderr, cancelled):
       yield l, None
     for _ in range(10):
@@ -141,11 +141,13 @@ class CommandHandler():
         return
     raise NotAllowedError(f'Command not Allowed: {cmd}')
   
-  def process_killer(self, process):
+  def process_killer(self, process, *close_fds):
     def wrap():
       if process.returncode is None:
         os.kill(process.pid, signal.SIGKILL)
         print(f'Process {process.pid} killed!')
+        for fd in close_fds:
+          os_close_slient(fd)
     return wrap
 
 def stream_stdin(conn: TCPConnection, dest, cancelled: Event):
@@ -156,11 +158,10 @@ def stream_stdin(conn: TCPConnection, dest, cancelled: Event):
         if data:
           os.write(dest, data)
         else:
-          os.close(dest)
+          os_close_slient(dest)
           break
     except ConnectionClosedError:
       cancelled.set()
-      os.close(dest)
   Thread(target=target, daemon=True).start()
 
 def output_reader(stdout: typing.IO[bytes], stderr, cancelled: Event):
@@ -279,7 +280,7 @@ def request_handler(conn: TCPConnection):
   try:
     stream_stdin(conn, stdin_write, cancelled)
     cmd_handler = CommandHandler()
-    for line, code in cmd_handler.exec(cmd, cwd, stdin_read, cancelled):
+    for line, code in cmd_handler.exec(cmd, cwd, stdin_read, stdin_write, cancelled):
       if line is not None:
         conn.send(line)
       if code is not None:
@@ -300,11 +301,8 @@ def request_handler(conn: TCPConnection):
     except ConnectionClosedError:
       pass
     cancelled.set()
-    try:
-      os.close(stdin_write)
-    except OSError:
-      pass
-    os.close(stdin_read)
+    os_close_slient(stdin_write)
+    os_close_slient(stdin_read)
     conn.close()
   
 def validate_request(request: dict, client_ip):
@@ -327,6 +325,12 @@ def validate_authorization(request: dict):
 def validate_client_ip(client_ip):
   if client_ip != '127.0.0.1':
     return format_stderr('Not allowed\n')
+  
+def os_close_slient(fd):
+  try:
+    os.close(fd)
+  except OSError:
+    pass
 
 class NotAllowedError(Exception):
   pass
