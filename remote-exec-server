@@ -1,25 +1,88 @@
 #!/usr/bin/env python3
 
+############################################################
+# Copied from https://github.com/chahal-p/tcp-connection-python/blob/main/tcpconnection.py
+from io import BytesIO as _BytesIO
+import signal
+from socket import socket as _Socket, MSG_WAITALL as _flag_MSG_WAITALL
+from threading import Lock as _Lock
+
+class TCPConnection():
+  LENGTH_PREFIX = 4
+  MAX_DATA_SIZE = 0xffffff
+
+  _sock: _Socket
+  def __init__(self, sock: _Socket):
+    self._sock = sock
+    self._send_lock = _Lock()
+    self._recv_lock = _Lock()
+
+  def _recv(self, size):
+    with _BytesIO() as buf:
+      with self._recv_lock:
+        while size > 0:
+          try:
+            data = self._sock.recv(size, _flag_MSG_WAITALL)
+          except OSError as e:
+            if e.errno == 9:
+              raise ConnectionClosedError()
+            else:
+              raise
+          if data:
+            buf.write(data)
+            size -= len(data)
+          else:
+            raise ConnectionClosedError()
+      return buf.getvalue()
+
+  def recv(self):
+    le = int.from_bytes(self._recv(self.LENGTH_PREFIX))
+    if le == 0:
+      return b''
+    data = self._recv(le)
+    if len(data) != le:
+      raise ValueError('Complete data did not arrive, missing bytes %s' % (le - len(data)))
+    return data
+
+  def send(self, data: bytes):
+    le = len(data)
+    if le > self.MAX_DATA_SIZE:
+      raise ValueError('Max allowed data size %d' % self.MAX_DATA_SIZE)
+    try:
+      with self._send_lock:
+        self._sock.sendall(int.to_bytes(le, length=self.LENGTH_PREFIX) + data)
+    except (BrokenPipeError, ConnectionResetError, TimeoutError) as e:
+      raise ConnectionClosedError(e)
+
+  def remote_address(self):
+    return self._sock.getpeername()
+
+  def close(self):
+    self._sock.close()
+
+class ConnectionClosedError(Exception): pass
+############################################################
+
+import argparse
+import base64
 import json
+import logging
+import os
+import re
+import pty
+import socket
+import subprocess
+import time
+import traceback
 import typing
+
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa, ed25519, ed448, padding
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from datetime import datetime, timezone
 from queue import Queue, Empty as EmptyQueueError
-from websockets.sync.server import serve
-
-import argparse
-import base64
-import logging
-import os
-import re
-import subprocess
-import threading
-import time
-import traceback
-import websockets
+from threading import Event, Thread
 
 FLAGS=None
 
@@ -38,25 +101,25 @@ SUPPORTED_KEY_TYPES = [
 MAX_MESSAGE_SIZE = 1024 * 512
 
 class OutputType:
+  PING   = 0
   STDOUT = 1
   STDERR = 2
   CODE   = 3
 
-
 class CommandHandler():
 
-  def exec(self, cmd: list, cwd:str, stdin, cancelled: threading.Event):
+  def exec(self, cmd: list, cwd:str, stdin_read, stdin_write, cancelled: Event):
     self.validate_cmd(' '.join(cmd))
     process = None
     try:
-      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin)
+      process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin_read)
     except Exception as e:
       cancelled.set()
       traceback.print_exception(e)
       yield format_stderr('{}\n'.format(str(e))), 1
     if not process:
       return
-    on_cancellation(cancelled, self.process_killer(process))
+    on_cancellation(cancelled, self.process_killer(process, stdin_read, stdin_write))
     for l in output_reader(process.stdout, process.stderr, cancelled):
       yield l, None
     for _ in range(10):
@@ -78,34 +141,35 @@ class CommandHandler():
         return
     raise NotAllowedError(f'Command not Allowed: {cmd}')
   
-  def process_killer(self, process):
+  def process_killer(self, process, *close_fds):
     def wrap():
       if process.returncode is None:
-        process.kill()
+        os.kill(process.pid, signal.SIGKILL)
         print(f'Process {process.pid} killed!')
+        for fd in close_fds:
+          os_close_slient(fd)
     return wrap
 
-def stream_stdin(ws: websockets.ServerConnection, dest, cancelled: threading.Event):
+def stream_stdin(conn: TCPConnection, dest, cancelled: Event):
   def target():
     try:
       while not cancelled.is_set():
-        data = ws.recv()
+        data = conn.recv()
         if data:
           os.write(dest, data)
         else:
+          os_close_slient(dest)
           break
-    except websockets.exceptions.ConnectionClosed:
+    except ConnectionClosedError:
       cancelled.set()
-    finally:
-      os.close(dest)
-  threading.Thread(target=target, daemon=True).start()
+  Thread(target=target, daemon=True).start()
 
-def output_reader(stdout: typing.IO[bytes], stderr, cancelled: threading.Event):
+def output_reader(stdout: typing.IO[bytes], stderr, cancelled: Event):
   queue = Queue()
-  done_stdout = threading.Event()
-  done_stderr = threading.Event()
-  t1 = threading.Thread(target=read_from_pipe, daemon=True, args=[stdout, queue, OutputType.STDOUT, done_stdout, cancelled])
-  t2 = threading.Thread(target=read_from_pipe, daemon=True, args=[stderr, queue, OutputType.STDERR, done_stderr, cancelled])
+  done_stdout = Event()
+  done_stderr = Event()
+  t1 = Thread(target=read_from_pipe, daemon=True, args=[stdout, queue, OutputType.STDOUT, done_stdout, cancelled])
+  t2 = Thread(target=read_from_pipe, daemon=True, args=[stderr, queue, OutputType.STDERR, done_stderr, cancelled])
   t1.start()
   t2.start()
   while not queue.empty() or not done_stdout.is_set() or not done_stderr.is_set():
@@ -130,7 +194,7 @@ def format_stderr(data: bytes|str|int) -> bytes:
 def format_returncode(code: int) -> bytes:
   return format_output(OutputType.CODE, code)
 
-def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done: threading.Event, cancelled: threading.Event):
+def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done: Event, cancelled: Event):
   with pipe:
     while not cancelled.is_set():
       data = os.read(pipe.fileno(), MAX_MESSAGE_SIZE)
@@ -139,14 +203,14 @@ def read_from_pipe(pipe: typing.IO[bytes], queue: Queue, type: OutputType, done:
       queue.put(format_output(type, data))
   done.set()
 
-def on_cancellation(cancelled: threading.Event, callback, *args, **kwargs):
+def on_cancellation(cancelled: Event, callback, *args, **kwargs):
   def checker():
     while True:
       if cancelled.is_set():
         callback(*args, **kwargs)
         return
       time.sleep(0.5)
-  threading.Thread(target=checker, daemon=True).start()
+  Thread(target=checker, daemon=True).start()
 
 def validate_token(token: str):
   if not token:
@@ -181,6 +245,109 @@ def verify_sig(sig_bytes, data_bytes):
       pass
   return False
 
+def cancel_on_connection_closed(conn: TCPConnection, cancelled: Event):
+  def pinger():
+    while not cancelled.is_set():
+      try:
+        conn.send(format_output(OutputType.PING, b''))
+        time.sleep(1)
+      except ConnectionClosedError:
+        cancelled.set()
+        return
+  Thread(target=pinger, daemon=True).start()
+
+def request_handler(conn: TCPConnection):
+  cancelled = Event()
+  cancel_on_connection_closed(conn, cancelled)
+  request_bytes = conn.recv()
+  request: dict = json.loads(request_bytes.decode())
+  client_ip, _ = conn.remote_address()
+  err = validate_request(request, client_ip)
+  if err:
+    conn.send(err)
+    conn.send(format_returncode(1))
+    return
+  cwd = request.get('CWD', None)
+  encoded_cmd = request.get('CMD')
+  cmd = []
+  for arg in encoded_cmd.split(':'):
+    cmd.append(base64.b64decode(arg).decode())
+  stdin_read, stdin_write = None, None
+  if request.get('tty', False):
+    stdin_write, stdin_read = pty.openpty()
+  else:
+    stdin_read, stdin_write = os.pipe()
+  try:
+    stream_stdin(conn, stdin_write, cancelled)
+    cmd_handler = CommandHandler()
+    for line, code in cmd_handler.exec(cmd, cwd, stdin_read, stdin_write, cancelled):
+      if line is not None:
+        conn.send(line)
+      if code is not None:
+        conn.send(format_returncode(code))
+  except NotAllowedError as e:
+    cancelled.set()
+    traceback.print_exception(e)
+    conn.send(format_stderr('{}\n'.format(str(e))))
+    conn.send(format_returncode(1))
+  except Exception as e:
+    cancelled.set()
+    traceback.print_exception(e)
+    conn.send(format_stderr('Internal Server Error\n'))
+    conn.send(format_returncode(1))
+  finally:
+    try:
+      conn.send(b'')
+    except ConnectionClosedError:
+      pass
+    cancelled.set()
+    os_close_slient(stdin_write)
+    os_close_slient(stdin_read)
+    conn.close()
+  
+def validate_request(request: dict, client_ip):
+  client_ip_err = validate_client_ip(client_ip)
+  if client_ip_err:
+    return client_ip_err
+  auth_err = validate_authorization(request)
+  if auth_err:
+    return auth_err
+
+def validate_authorization(request: dict):
+  if not FLAGS.disable_auth:
+    authtoken = request.get('Authorization', None)
+    if authtoken:
+      if not validate_token(authtoken):
+        return format_stderr('Invalid auth token\n')
+    else:
+      return format_stderr('Auth token not provided\n')
+
+def validate_client_ip(client_ip):
+  if client_ip != '127.0.0.1':
+    return format_stderr('Not allowed\n')
+  
+def os_close_slient(fd):
+  try:
+    os.close(fd)
+  except OSError:
+    pass
+
+class NotAllowedError(Exception):
+  pass
+
+class KeyTypeNotSupported(Exception):
+  pass
+
+class NotAbleToParseBody(Exception):
+  pass
+
+def handle_connection_threaded(conn: socket.socket):
+  def wrap():
+    with conn:
+      request_handler(TCPConnection(conn))
+  t1 = Thread(target=wrap, daemon=True)
+  t1.start()
+
 def init_authorized_keys():
   global AUTHORIZED_PUBLIC_KEYS, SUPPORTED_KEY_TYPES
   public_keys = []
@@ -213,89 +380,6 @@ def init_authorized_keys():
     public_keys.append(public_key)
   AUTHORIZED_PUBLIC_KEYS = tuple(public_keys)
 
-def cancel_on_connection_closed(ws: websockets.ServerConnection, cancelled: threading.Event):
-  def pinger():
-    while not cancelled.is_set():
-      try:
-        ws.ping()
-        time.sleep(3)
-      except websockets.ConnectionClosed:
-        cancelled.set()
-        return
-  threading.Thread(target=pinger, daemon=True).start()
-
-def websocket_handler(ws: websockets.ServerConnection):
-  cancelled = threading.Event()
-  cancel_on_connection_closed(ws, cancelled)
-  data = ws.recv()
-  req_len, request_bytes = data[:4], data[4:]
-  request: dict = json.loads(request_bytes.decode())
-  client_ip, _ = ws.remote_address
-  err = validate_request(request, client_ip)
-  if err:
-    ws.send(err)
-    ws.send(format_returncode(1))
-    return
-  cwd = request.get('CWD', None)
-  encoded_cmd = request.get('CMD')
-  cmd = []
-  for arg in encoded_cmd.split(':'):
-    cmd.append(base64.b64decode(arg).decode())
-  stdin_read_fd, stdin_write_fd = os.pipe()
-  try:
-    stream_stdin(ws, stdin_write_fd, cancelled)
-    cmd_handler = CommandHandler()
-    for line, code in cmd_handler.exec(cmd, cwd, stdin_read_fd, cancelled):
-      if line is not None:
-        ws.send(line)
-      if code is not None:
-        ws.send(format_returncode(code))
-  except NotAllowedError as e:
-    cancelled.set()
-    traceback.print_exception(e)
-    ws.send(format_stderr('{}\n'.format(str(e))))
-    ws.send(format_returncode(1))
-  except Exception as e:
-    cancelled.set()
-    traceback.print_exception(e)
-    ws.send(format_stderr('Internal Server Error\n'))
-    ws.send(format_returncode(1))
-  finally:
-    os.close(stdin_read_fd)
-    cancelled.set()
-    ws.close()
-  
-def validate_request(request: dict, client_ip):
-  client_ip_err = validate_client_ip(client_ip)
-  if client_ip_err:
-    return client_ip_err
-  auth_err = validate_authorization(request)
-  if auth_err:
-    return auth_err
-
-def validate_authorization(request: dict):
-  if not FLAGS.disable_auth:
-    authtoken = request.get('Authorization', None)
-    if authtoken:
-      if not validate_token(authtoken):
-        return format_stderr('Invalid auth token\n')
-    else:
-      return format_stderr('Auth token not provided\n')
-
-def validate_client_ip(client_ip):
-  if client_ip != '127.0.0.1':
-    return format_stderr('Not allowed\n')
-
-class NotAllowedError(Exception):
-  pass
-
-class KeyTypeNotSupported(Exception):
-  pass
-
-class NotAbleToParseBody(Exception):
-  pass
-
-
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Exec server starts a http server to recieve commands and execute those.")
   parser.add_argument('-p', '--port', metavar='', type=int, help="Port used by server to listen", default=DEFAULT_PORT)
@@ -315,6 +399,12 @@ if __name__ == "__main__":
         format="%(asctime)s %(message)s",
         level=logging.DEBUG,
     )
-  with serve(handler=websocket_handler, host="localhost", port=FLAGS.port) as server:
+
+  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('127.0.0.1', FLAGS.port))
+    s.listen()
     print(f'Listening at {FLAGS.port}')
-    server.serve_forever()
+    while True:
+      conn, _ = s.accept()
+      handle_connection_threaded(conn)
